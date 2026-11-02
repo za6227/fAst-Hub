@@ -172,9 +172,12 @@ local function GetPerfectStrikeCFrame(origCF)
         local myRoot = char and char:FindFirstChild("HumanoidRootPart")
         if bRoot and myRoot then
             local toB = (bRoot.Position - myRoot.Position)
-            local unit = toB.Magnitude > 0.1 and toB.Unit or Vector3.new(0, 0, -1)
-            -- ส่งตำแหน่งจ่อหน้าบอสตรงๆ ไม่ว่าผู้เล่นจะยืนมุมไหน ตีโดน 100%
-            return CFrame.lookAt(bRoot.Position - unit * 2.5, bRoot.Position)
+            local flatToB = Vector3.new(toB.X, 0, toB.Z)
+            local flatUnit = flatToB.Magnitude > 0.1 and flatToB.Unit or Vector3.new(0, 0, -1)
+            -- ส่งตำแหน่งอ้างอิงระดับความสูงเดียวกับตัวบอสตรงๆ ระยะ 3.0 studs ด้านหน้า
+            -- ทำให้กล่อง Hitbox (ปกติออฟเซ็ต -3.0 ถึง -3.5) ตกใส่จุดกึ่งกลาง HumanoidRootPart ของบอส 100%
+            local strikePos = Vector3.new(bRoot.Position.X - flatUnit.X * 3.0, bRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 3.0)
+            return CFrame.lookAt(strikePos, bRoot.Position)
         end
     end
     return origCF
@@ -438,6 +441,8 @@ end)
 -- // 8. AUTO BOSS SMART COMBAT ENGINE (ตีตรงจังหวะ ไม่ตีมั่ว หันหาบอสเฉพาะตอนสู้) // --
 local lastAttackTime = 0
 local hadBossFighting = false
+local isPerformingUltimate = false
+local ultCastTime = 0
 
 getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoBoss then return end
@@ -460,6 +465,7 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         handler.OverrideLookDirection = nil
         handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
         handler._desiredQueuedAction = nil
+        isPerformingUltimate = false
 
         if hadBossFighting then
             hadBossFighting = false
@@ -477,13 +483,14 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         handler.OverrideLookDirection = nil
         handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
         handler._desiredQueuedAction = nil
+        isPerformingUltimate = false
         return
     end
 
     local toBoss = (bRoot.Position - myRoot.Position)
     local dist = toBoss.Magnitude
 
-    -- [หันหาศัตรูเฉพาะตอนต่อสู้]: ต้องอยู่ในห้องต่อสู้จริง (InCombat) และระยะไม่เกิน 40 studs
+    -- [หันหาศัตรูเฉพาะตอนต่อสู้]: ต้องอยู่ในห้องต่อสู้จริง (InCombat) และระยะไม่เกิน 45 studs
     -- ถ้าอยู่นอกห้องดวลหรือยังไม่เริ่มสู้ จะปล่อยให้ผู้เล่นหมุนตัวและควบคุมกล้องเองได้ 100% อิสระ
     local inCombat = targetBoss:GetAttribute("InCombat") == true
     if not inCombat or dist > 45 then
@@ -491,46 +498,72 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         handler.OverrideLookDirection = nil
         handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
         handler._desiredQueuedAction = nil
+        isPerformingUltimate = false
         return
     end
 
     hadBossFighting = true
 
-    -- [A] หันหน้าหาบอสเฉพาะตอนสู้ (Focused Body Lock - ไม่แย่งมุมกล้องผู้เล่น)
+    -- [ตรวจจับสถานะอันติ]: ดูว่าอยู่ในจังหวะร่ายหรือท่าอนิเมชันอันติหรือไม่
+    local currentAct = am.CurrentAction
+    local actName = currentAct and tostring(currentAct.Name) or ""
+    local isUltActionActive = (currentAct and (currentAct.ActionType == "Ultimate" or string.find(actName, "Ultimate"))) or (tick() - ultCastTime < 1.4)
+    if not isUltActionActive then
+        isPerformingUltimate = false
+    end
+
+    -- [A] ล็อคเป้าและหันหน้าหาบอสแบบแม่นยำสูง (Focused Body Lock)
     local flatToBoss = Vector3.new(toBoss.X, 0, toBoss.Z)
     local flatUnit = flatToBoss.Magnitude > 0.1 and flatToBoss.Unit or Vector3.new(0, 0, -1)
     local lookTarget = Vector3.new(bRoot.Position.X, myRoot.Position.Y, bRoot.Position.Z)
 
-    -- ล็อคเป้าและหันตัวละครหาบอสแบบนิ่งสนิท
     handler.TargetLock = bRoot
     handler.OverrideLookDirection = flatUnit
     handler.DesiredLookDirection = flatUnit
     handler.DesiredLookResponsiveness = 999
-    myRoot.CFrame = CFrame.lookAt(myRoot.Position, lookTarget)
+
     if handler.PhysicsComponent and handler.PhysicsComponent.AlignOrientation then
         handler.PhysicsComponent.AlignOrientation.CFrame = CFrame.lookAt(myRoot.Position, lookTarget)
     end
 
-    -- เคลื่อนที่ประชิดในระยะที่อาวุธตีถึง (3.8 studs)
-    if dist > 4.5 then
-        handler.DesiredMoveDirection = flatUnit
-        local approachPos = bRoot.Position - flatUnit * 3.8
-        myRoot.CFrame = myRoot.CFrame:Lerp(CFrame.new(Vector3.new(approachPos.X, myRoot.Position.Y, approachPos.Z), lookTarget), 0.35)
-    else
+    -- ระยะเป้าหมาย: ถ้าเป็นช่วงอันติให้เกาะติดหน้าบอส 2.8 studs แนบสนิท / ถ้าคอมโบปกติ 3.6 studs
+    local targetDist = (isPerformingUltimate or isUltActionActive) and 2.8 or 3.6
+    local approachPos = bRoot.Position - flatUnit * targetDist
+
+    if isPerformingUltimate or isUltActionActive then
+        -- ล็อคตัวละครเกาะติดหน้าบอสแบบ Magnetic Lock ตลอดการร่ายอันติ แม้บอสจะกระโดดหรือถอยหลัง
+        myRoot.CFrame = CFrame.new(Vector3.new(approachPos.X, myRoot.Position.Y, approachPos.Z), lookTarget)
         handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
+    else
+        if dist > 4.2 then
+            handler.DesiredMoveDirection = flatUnit
+            myRoot.CFrame = myRoot.CFrame:Lerp(CFrame.new(Vector3.new(approachPos.X, myRoot.Position.Y, approachPos.Z), lookTarget), 0.4)
+        else
+            handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
+            myRoot.CFrame = CFrame.lookAt(myRoot.Position, lookTarget)
+        end
     end
 
-    -- [B] ระบบโจมตีอัตโนมัติคอมโบต่อเนื่อง (100% Hit Guaranteed)
-    if dist <= 6.0 and IsBossAlive(targetBoss) then
+    -- [B] ระบบโจมตีอัตโนมัติคอมโบต่อเนื่อง & อันติแม่นยำ 100%
+    if dist <= 6.5 and IsBossAlive(targetBoss) then
         -- 1. แทงปิดฉากเมื่อบอสการ์ดแตก (Critical Strike)
         local critTarget = CharacterController.CriticalStrikeTarget
         if critTarget then
             ReplicatedStorage.Remotes.PlayerCharacter.Request.CriticalStrike:FireServer(critTarget.Parent)
+        elseif isPerformingUltimate or isUltActionActive then
+            -- กำลังออกท่าอันติ: งดแทรก Light Attack หรือคลิกเมาส์ เพื่อให้อันติฟันเข้าเป้าครบ 100% ไม่หลุดคอมโบ
         else
-            -- 2. ปล่อย Ultimate ทันทีที่เกจเต็ม
+            -- 2. ปล่อย Ultimate ทันทีที่เกจเต็ม (100% Energy)
             if handler:CanPerformUltimate() then
+                isPerformingUltimate = true
+                ultCastTime = tick()
+
+                -- วาร์ปประกบหน้าบอสระดับ 2.8 studs ในเสี้ยววินาทีก่อนปล่อยอันติ
+                myRoot.CFrame = CFrame.new(Vector3.new(bRoot.Position.X - flatUnit.X * 2.8, myRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 2.8), lookTarget)
+
                 handler._desiredQueuedAction = "Ultimate"
                 am:TryQueueBasicAttack("Ultimate")
+                ShowHUDToast("🔥 ใช้อันติล็อกเป้าบอส (Ultimate)!", Color3.fromRGB(255, 60, 60))
             else
                 -- 3. รันคอมโบ Light Attack ตลอดเวลาที่ Action ว่าง
                 if not am._queuedActionType then
