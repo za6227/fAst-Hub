@@ -1,71 +1,3 @@
--- // Configuration
-local WEBHOOK_URL = "วาง_URL_DISCORD_WEBHOOK_ตรงนี้"
-
--- // Counter API (ตัวนับรันเดิม)
-pcall(function()
-    game:HttpGet("https://api.counterapi.dev/v1/fAst-Hub/script_runs/up")
-end)
-
--- // Discord Webhook Notification
-task.spawn(function()
-    pcall(function()
-        local HttpService = game:GetService("HttpService")
-        local Players = game:GetService("Players")
-        local MarketplaceService = game:GetService("MarketplaceService")
-        local player = Players.LocalPlayer
-
-        -- ดึงชื่อเกม
-        local gameName = "Unknown Game"
-        pcall(function()
-            gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name
-        end)
-
-        -- ข้อมูล Request ส่งหา Discord
-        local httpRequest = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
-        if httpRequest and WEBHOOK_URL ~= "" and not string.find(WEBHOOK_URL, "วาง_URL") then
-            local data = {
-                ["embeds"] = {{
-                    ["title"] = "🚀 fAst Hub | Script Executed!",
-                    ["color"] = 5763719, -- สีเขียว
-                    ["fields"] = {
-                        {
-                            ["name"] = "👤 Player",
-                            ["value"] = string.format("%s (@%s)", player.DisplayName, player.Name),
-                            ["inline"] = true
-                        },
-                        {
-                            ["name"] = "🆔 User ID",
-                            ["value"] = tostring(player.UserId),
-                            ["inline"] = true
-                        },
-                        {
-                            ["name"] = "🎮 Game",
-                            ["value"] = string.format("%s (ID: %d)", gameName, game.PlaceId),
-                            ["inline"] = false
-                        },
-                        {
-                            ["name"] = "⏰ Time",
-                            ["value"] = string.format("<t:%d:R>", os.time()),
-                            ["inline"] = true
-                        }
-                    },
-                    ["footer"] = {
-                        ["text"] = "fAst Hub Tracker System"
-                    }
-                }}
-            }
-
-            httpRequest({
-                Url = WEBHOOK_URL,
-                Method = "POST",
-                Headers = {
-                    ["Content-Type"] = "application/json"
-                },
-                Body = HttpService:JSONEncode(data)
-            })
-        end
-    end)
-end)
 -- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
@@ -173,9 +105,10 @@ local function ResolveGameControllers()
 end
 ResolveGameControllers()
 
--- รายการบอสที่สามารถเลือกสู้ได้
+-- รายการบอสที่สามารถเลือกสู้ได้ (พร้อมเพิ่ม The Headless Shogun)
 local BossList = {
     {Id = "Any", Display = "Auto (Any)"},
+    {Id = "Shogun", Display = "The Headless Shogun"},
     {Id = "Jack", Display = "Jack"},
     {Id = "Silene", Display = "Silene"},
     {Id = "Benkei", Display = "Benkei"},
@@ -183,7 +116,7 @@ local BossList = {
     {Id = "Tremor", Display = "Tremor"}
 }
 
-local currentBossIndex = 2 -- Default to Jack
+local currentBossIndex = 2 -- Default to The Headless Shogun
 
 -- // 4. CONFIG (พร้อมระบบบันทึกค่าข้ามห้อง fAstHub_Config.json) // --
 local HttpService = game:GetService("HttpService")
@@ -211,8 +144,8 @@ getgenv().fAstConfig = {
     AutoBoss = pickBool(oldCfg.AutoBoss, savedCfg.AutoBoss, true),
     AutoReturnLobby = pickBool(oldCfg.AutoReturnLobby, savedCfg.AutoReturnLobby, true),
     AutoClaimRewards = pickBool(oldCfg.AutoClaimRewards, savedCfg.AutoClaimRewards, false),
-    SelectedBoss = oldCfg.SelectedBoss or savedCfg.SelectedBoss or "Jack",
-    SelectedBossId = oldCfg.SelectedBossId or savedCfg.SelectedBossId or "Jack"
+    SelectedBoss = oldCfg.SelectedBoss or savedCfg.SelectedBoss or "The Headless Shogun",
+    SelectedBossId = oldCfg.SelectedBossId or savedCfg.SelectedBossId or "Shogun"
 }
 
 local function SaveConfig()
@@ -497,13 +430,20 @@ local function FindBossTarget(chosenBoss)
 
     if #candidates == 0 then return nil end
 
-    -- ถ้าตรงกับบอสที่เลือก ให้เลือกตัวนั้นก่อน
+    -- ถ้าตรงกับบอสที่เลือก ให้เลือกตัวนั้นก่อน (รองรับ The Headless Shogun, Jack, Silene, Benkei, Nephra & Ammut, Tremor)
     if chosenBoss and chosenBoss ~= "Auto (Any)" and chosenBoss ~= "Any" then
         local cLower = string.lower(chosenBoss)
         for _, m in ipairs(candidates) do
             local nLower = string.lower(m.Name)
             local kitLower = string.lower(tostring(m:GetAttribute("MiniBossKit") or ""))
-            if string.find(nLower, cLower) or string.find(kitLower, cLower) or (chosenBoss == "Nephra & Ammut" and (string.find(nLower, "nephra") or string.find(nLower, "ammut"))) then
+            local dispLower = string.lower(tostring(m:GetAttribute("NPCDisplayName") or ""))
+            local titleLower = string.lower(tostring(m:GetAttribute("NPCTitleText") or ""))
+            if string.find(nLower, cLower) 
+               or string.find(kitLower, cLower) 
+               or string.find(dispLower, cLower) 
+               or string.find(titleLower, cLower)
+               or (string.find(cLower, "shogun") and (string.find(nLower, "shogun") or string.find(kitLower, "shogun") or string.find(dispLower, "shogun")))
+               or (chosenBoss == "Nephra & Ammut" and (string.find(nLower, "nephra") or string.find(nLower, "ammut"))) then
                 return m
             end
         end
@@ -1857,8 +1797,19 @@ local function StartBossFightNow()
             if IsInActiveFight() then return end
 
             isReturningLobby = false
-            local bId = getgenv().fAstConfig.SelectedBossId or "Jack"
-            if bId == "Any" or not bId then bId = "Jack" end
+            local bId = getgenv().fAstConfig.SelectedBossId or "Shogun"
+            if bId == "Any" or not bId then bId = "Shogun" end
+
+            -- จุดคบเพลิง/ปลดล็อคหลุมศพให้อัตโนมัติถ้ายังไม่ได้จุด (สำหรับ The Headless Shogun และบอสตัวอื่น)
+            pcall(function()
+                local ep = GameManager:GetController("EventProgressController")
+                if ep and ep.State and ep.State.Graves and ep.State.Graves[bId] and not ep.State.Graves[bId].Lit then
+                    local epRemotes = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("EventProgress")
+                    if epRemotes and epRemotes:FindFirstChild("Request_LightLantern") then
+                        epRemotes.Request_LightLantern:FireServer(bId)
+                    end
+                end
+            end)
 
             ShowHUDToast("กำลังวาร์ปเข้าสู้บอส " .. bId .. "...", Color3.fromRGB(255, 180, 50))
 
