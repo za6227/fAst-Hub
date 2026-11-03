@@ -71,10 +71,11 @@ local currentBossIndex = 2 -- Default to Jack
 -- // 4. CONFIG // --
 local oldCfg = getgenv().fAstConfig or {}
 getgenv().fAstConfig = {
-    AutoParry = oldCfg.AutoParry ~= nil and oldCfg.AutoParry or false,
+    AutoParry = false,
     ParryKeybind = oldCfg.ParryKeybind or Enum.KeyCode.V,
-    AutoBoss = oldCfg.AutoBoss ~= nil and oldCfg.AutoBoss or true,
-    AutoReturnLobby = oldCfg.AutoReturnLobby ~= nil and oldCfg.AutoReturnLobby or true,
+    AutoBoss = false,
+    AutoReturnLobby = false,
+    AutoClaimRewards = false,
     SelectedBoss = oldCfg.SelectedBoss or "Jack",
     SelectedBossId = oldCfg.SelectedBossId or "Jack"
 }
@@ -168,15 +169,12 @@ local function GetPerfectStrikeCFrame(origCF)
     local targetBoss = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
     if targetBoss and IsBossAlive(targetBoss) then
         local bRoot = targetBoss:FindFirstChild("HumanoidRootPart")
-        local char = LocalPlayer.Character
-        local myRoot = char and char:FindFirstChild("HumanoidRootPart")
-        if bRoot and myRoot then
-            local toB = (bRoot.Position - myRoot.Position)
+        if bRoot then
+            local toB = (bRoot.Position - origCF.Position)
             local flatToB = Vector3.new(toB.X, 0, toB.Z)
-            local flatUnit = flatToB.Magnitude > 0.1 and flatToB.Unit or Vector3.new(0, 0, -1)
-            -- ส่งตำแหน่งอ้างอิงระดับความสูงเดียวกับตัวบอสตรงๆ ระยะ 3.0 studs ด้านหน้า
-            -- ทำให้กล่อง Hitbox (ปกติออฟเซ็ต -3.0 ถึง -3.5) ตกใส่จุดกึ่งกลาง HumanoidRootPart ของบอส 100%
-            local strikePos = Vector3.new(bRoot.Position.X - flatUnit.X * 3.0, bRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 3.0)
+            local flatUnit = flatToB.Magnitude > 0.1 and flatToB.Unit or origCF.LookVector
+            -- ปรับระดับความสูงและตำแหน่งให้อยู่ด้านหน้าบอส 2.4 studs ที่ระดับบอสพอดี ทำให้ Hitbox โดน 100%
+            local strikePos = Vector3.new(bRoot.Position.X - flatUnit.X * 2.4, bRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 2.4)
             return CFrame.lookAt(strikePos, bRoot.Position)
         end
     end
@@ -438,6 +436,57 @@ LocalPlayer.CharacterAdded:Connect(function()
     isReturningLobby = false
 end)
 
+-- // 7.6 AUTO CLAIM REWARDS ENGINE // --
+local function ClaimAllRewards(silent)
+    task.spawn(function()
+        -- 1. เคลมรางวัล Like (+500 Coins +50 Gems)
+        pcall(function()
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Player")
+            if remotes and remotes:FindFirstChild("RequestLikesReward") then
+                remotes.RequestLikesReward:FireServer()
+            end
+        end)
+
+        -- 2. เคลมรางวัล Favorite (+1,000 Coins +75 Gems)
+        pcall(function()
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Player")
+            if remotes and remotes:FindFirstChild("RequestFavoriteReward") then
+                remotes.RequestFavoriteReward:FireServer()
+            end
+        end)
+
+        -- 3. เคลมรางวัล BattlePass อัตโนมัติ
+        pcall(function()
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("BattlePass")
+            if remotes and remotes:FindFirstChild("Request_Claim") then
+                remotes.Request_Claim:FireServer()
+            end
+        end)
+
+        -- 4. เคลม EventProgress / Keepsake
+        pcall(function()
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("EventProgress")
+            if remotes and remotes:FindFirstChild("Request_RedeemKey") then
+                remotes.Request_RedeemKey:FireServer()
+            end
+        end)
+
+        if not silent then
+            ShowHUDToast("🎁 ส่งคำขอรับรางวัลทั้งหมดเรียบร้อย!", Color3.fromRGB(255, 100, 200))
+        end
+    end)
+end
+
+-- ลูปตรวจสอบเคลมรางวัลอัตโนมัติเบื้องหลัง
+task.spawn(function()
+    while true do
+        task.wait(12)
+        if getgenv().fAstConfig and getgenv().fAstConfig.AutoClaimRewards then
+            ClaimAllRewards(true)
+        end
+    end
+end)
+
 -- // 8. AUTO BOSS SMART COMBAT ENGINE (ตีตรงจังหวะ ไม่ตีมั่ว หันหาบอสเฉพาะตอนสู้) // --
 local lastAttackTime = 0
 local hadBossFighting = false
@@ -459,6 +508,16 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     local targetBoss = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
 
+    -- [ฟังก์ชันช่วยปลดล็อคมุมกล้องเมื่ออยู่นอกการต่อสู้]
+    local function ReleaseCameraLock()
+        pcall(function()
+            local tlc = GameManager:GetController("TargetLockController")
+            if tlc and tlc.ForcedTargetLock then
+                tlc:SetForcedTargetLock(nil)
+            end
+        end)
+    end
+
     -- [ตรวจสอบสถานะการต่อสู้]: บอสต้องยังมีชีวิตอยู่จริง
     if not targetBoss or not IsBossAlive(targetBoss) then
         handler.TargetLock = nil
@@ -466,6 +525,7 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
         handler._desiredQueuedAction = nil
         isPerformingUltimate = false
+        ReleaseCameraLock()
 
         if hadBossFighting then
             hadBossFighting = false
@@ -484,21 +544,21 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
         handler._desiredQueuedAction = nil
         isPerformingUltimate = false
+        ReleaseCameraLock()
         return
     end
 
     local toBoss = (bRoot.Position - myRoot.Position)
     local dist = toBoss.Magnitude
 
-    -- [หันหาศัตรูเฉพาะตอนต่อสู้]: ต้องอยู่ในห้องต่อสู้จริง (InCombat) และระยะไม่เกิน 45 studs
-    -- ถ้าอยู่นอกห้องดวลหรือยังไม่เริ่มสู้ จะปล่อยให้ผู้เล่นหมุนตัวและควบคุมกล้องเองได้ 100% อิสระ
-    local inCombat = targetBoss:GetAttribute("InCombat") == true
-    if not inCombat or dist > 45 then
+    -- ตรวจสอบระยะต่อสู้ (ถ้าอยู่ในห้องสู้บอส ระยะไม่เกิน 85 studs)
+    if dist > 85 then
         handler.TargetLock = nil
         handler.OverrideLookDirection = nil
         handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
         handler._desiredQueuedAction = nil
         isPerformingUltimate = false
+        ReleaseCameraLock()
         return
     end
 
@@ -512,10 +572,10 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         isPerformingUltimate = false
     end
 
-    -- [A] ล็อคเป้าและหันหน้าหาบอสแบบแม่นยำสูง (Focused Body Lock)
+    -- [A] ล็อคเป้าตัวละคร + หันมุมกล้อง (Camera) เข้าหาบอสอัตโนมัติ
     local flatToBoss = Vector3.new(toBoss.X, 0, toBoss.Z)
-    local flatUnit = flatToBoss.Magnitude > 0.1 and flatToBoss.Unit or Vector3.new(0, 0, -1)
-    local lookTarget = Vector3.new(bRoot.Position.X, myRoot.Position.Y, bRoot.Position.Z)
+    local flatUnit = flatToBoss.Magnitude > 0.1 and flatToBoss.Unit or myRoot.CFrame.LookVector
+    local lookTarget = Vector3.new(bRoot.Position.X, bRoot.Position.Y, bRoot.Position.Z)
 
     handler.TargetLock = bRoot
     handler.OverrideLookDirection = flatUnit
@@ -526,26 +586,45 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         handler.PhysicsComponent.AlignOrientation.CFrame = CFrame.lookAt(myRoot.Position, lookTarget)
     end
 
-    -- ระยะเป้าหมาย: ถ้าเป็นช่วงอันติให้เกาะติดหน้าบอส 2.8 studs แนบสนิท / ถ้าคอมโบปกติ 3.6 studs
-    local targetDist = (isPerformingUltimate or isUltActionActive) and 2.8 or 3.6
-    local approachPos = bRoot.Position - flatUnit * targetDist
+    -- หมุนมุมกล้อง (Camera) ให้หันจับเป้าบอสที่กำลังสู้อยู่แบบนุ่มนวล
+    pcall(function()
+        local tlc = GameManager:GetController("TargetLockController")
+        if tlc and tlc.ForcedTargetLock ~= bRoot then
+            tlc:SetForcedTargetLock(bRoot)
+        end
+    end)
+
+    local cam = workspace.CurrentCamera
+    if cam then
+        local camFocus = bRoot.Position + Vector3.new(0, 1.2, 0)
+        local targetCamCF = CFrame.lookAt(cam.CFrame.Position, camFocus)
+        cam.CFrame = cam.CFrame:Lerp(targetCamCF, 0.25)
+    end
+
+    -- ระยะเป้าหมายระดับประชิด: 2.5 studs เพื่อให้ฟันโดน 100% ทุกอาวุธ (ไม่ฟันลม)
+    local targetDist = (isPerformingUltimate or isUltActionActive) and 2.2 or 2.5
+    local approachPos = Vector3.new(
+        bRoot.Position.X - flatUnit.X * targetDist,
+        bRoot.Position.Y,
+        bRoot.Position.Z - flatUnit.Z * targetDist
+    )
 
     if isPerformingUltimate or isUltActionActive then
         -- ล็อคตัวละครเกาะติดหน้าบอสแบบ Magnetic Lock ตลอดการร่ายอันติ แม้บอสจะกระโดดหรือถอยหลัง
-        myRoot.CFrame = CFrame.new(Vector3.new(approachPos.X, myRoot.Position.Y, approachPos.Z), lookTarget)
+        myRoot.CFrame = CFrame.lookAt(approachPos, bRoot.Position)
         handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
     else
-        if dist > 4.2 then
+        if dist > 3.0 then
             handler.DesiredMoveDirection = flatUnit
-            myRoot.CFrame = myRoot.CFrame:Lerp(CFrame.new(Vector3.new(approachPos.X, myRoot.Position.Y, approachPos.Z), lookTarget), 0.4)
+            myRoot.CFrame = myRoot.CFrame:Lerp(CFrame.lookAt(approachPos, bRoot.Position), 0.5)
         else
             handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
-            myRoot.CFrame = CFrame.lookAt(myRoot.Position, lookTarget)
+            myRoot.CFrame = myRoot.CFrame:Lerp(CFrame.lookAt(approachPos, bRoot.Position), 0.35)
         end
     end
 
     -- [B] ระบบโจมตีอัตโนมัติคอมโบต่อเนื่อง & อันติแม่นยำ 100%
-    if dist <= 6.5 and IsBossAlive(targetBoss) then
+    if dist <= 7.5 and IsBossAlive(targetBoss) then
         -- 1. แทงปิดฉากเมื่อบอสการ์ดแตก (Critical Strike)
         local critTarget = CharacterController.CriticalStrikeTarget
         if critTarget then
@@ -586,85 +665,162 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     end
 end)
 
--- // 8. COMPACT MINIMALIST UI (fAst Hub) // --
+-- // 8. MODERN CYBER-AESTHETIC GLASS UI (fAst Hub) // --
+pcall(function()
+    if guiParent:FindFirstChild("fAstHub_DG") then
+        guiParent.fAstHub_DG:Destroy()
+    end
+    if LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("fAstHub_DG") then
+        LocalPlayer.PlayerGui.fAstHub_DG:Destroy()
+    end
+end)
+
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "fAstHub_DG"
 ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 99999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = guiParent
 
 local Main = Instance.new("Frame")
 Main.Name = "MainFrame"
-Main.Size = UDim2.new(0, 326, 0, 408)
-Main.Position = UDim2.new(0.05, 0, 0.18, 0)
-Main.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
+Main.Size = UDim2.new(0, 338, 0, 400)
+Main.Position = UDim2.new(0.04, 0, 0.15, 0)
+Main.BackgroundColor3 = Color3.fromRGB(15, 13, 24)
 Main.BorderSizePixel = 0
 Main.Active = true
 Main.ClipsDescendants = true
 Main.Parent = ScreenGui
 
+local MainGrad = Instance.new("UIGradient")
+MainGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(24, 19, 40)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(16, 14, 26)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(11, 9, 18))
+})
+MainGrad.Rotation = 45
+MainGrad.Parent = Main
+
 local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.CornerRadius = UDim.new(0, 14)
 MainCorner.Parent = Main
 
 local MainStroke = Instance.new("UIStroke")
-MainStroke.Thickness = 1.5
-MainStroke.Color = Color3.fromRGB(140, 60, 255)
+MainStroke.Thickness = 1.6
+MainStroke.Color = Color3.fromRGB(155, 75, 255)
 MainStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 MainStroke.Parent = Main
 
+-- TopBar (Header)
 local TopBar = Instance.new("Frame")
 TopBar.Name = "TopBar"
-TopBar.Size = UDim2.new(1, 0, 0, 42)
-TopBar.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
+TopBar.Size = UDim2.new(1, 0, 0, 46)
+TopBar.BackgroundColor3 = Color3.fromRGB(26, 21, 42)
 TopBar.BorderSizePixel = 0
 TopBar.Parent = Main
 
 local TopCorner = Instance.new("UICorner")
-TopCorner.CornerRadius = UDim.new(0, 12)
+TopCorner.CornerRadius = UDim.new(0, 14)
 TopCorner.Parent = TopBar
+
+local TopGrad = Instance.new("UIGradient")
+TopGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(35, 27, 56)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 16, 32))
+})
+TopGrad.Parent = TopBar
+
+local TopLine = Instance.new("Frame")
+TopLine.Name = "AccentLine"
+TopLine.Size = UDim2.new(1, 0, 0, 1.5)
+TopLine.Position = UDim2.new(0, 0, 1, -1.5)
+TopLine.BackgroundColor3 = Color3.fromRGB(140, 60, 240)
+TopLine.BorderSizePixel = 0
+TopLine.Parent = TopBar
 
 local Title = Instance.new("TextLabel")
 Title.Name = "Title"
-Title.Size = UDim2.new(0.6, 0, 1, 0)
+Title.Size = UDim2.new(0, 95, 1, 0)
 Title.Position = UDim2.new(0, 14, 0, 0)
 Title.BackgroundTransparency = 1
 Title.Font = Enum.Font.GothamBold
-Title.Text = "⚡ fAst Hub"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Text = "fAst Hub"
+Title.TextColor3 = Color3.fromRGB(245, 240, 255)
 Title.TextSize = 16
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = TopBar
 
-local SubTitle = Instance.new("TextLabel")
-SubTitle.Name = "SubTitle"
-SubTitle.Size = UDim2.new(0.35, 0, 1, 0)
-SubTitle.Position = UDim2.new(0, 105, 0, 0)
-SubTitle.BackgroundTransparency = 1
-SubTitle.Font = Enum.Font.Gotham
-SubTitle.Text = "• [Right Ctrl]"
-SubTitle.TextColor3 = Color3.fromRGB(170, 90, 255)
-SubTitle.TextSize = 11
-SubTitle.TextXAlignment = Enum.TextXAlignment.Left
-SubTitle.Parent = TopBar
+local TagBadge = Instance.new("Frame")
+TagBadge.Name = "TagBadge"
+TagBadge.Size = UDim2.new(0, 42, 0, 18)
+TagBadge.Position = UDim2.new(0, 98, 0.5, -9)
+TagBadge.BackgroundColor3 = Color3.fromRGB(80, 35, 145)
+TagBadge.BorderSizePixel = 0
+TagBadge.Parent = TopBar
+
+local TagCorner = Instance.new("UICorner")
+TagCorner.CornerRadius = UDim.new(0, 5)
+TagCorner.Parent = TagBadge
+
+local TagText = Instance.new("TextLabel")
+TagText.Size = UDim2.new(1, 0, 1, 0)
+TagText.BackgroundTransparency = 1
+TagText.Font = Enum.Font.GothamBold
+TagText.Text = "PRO"
+TagText.TextColor3 = Color3.fromRGB(225, 190, 255)
+TagText.TextSize = 9.5
+TagText.Parent = TagBadge
+
+local KeyChip = Instance.new("Frame")
+KeyChip.Name = "KeyChip"
+KeyChip.Size = UDim2.new(0, 78, 0, 20)
+KeyChip.Position = UDim2.new(0, 148, 0.5, -10)
+KeyChip.BackgroundColor3 = Color3.fromRGB(20, 17, 30)
+KeyChip.BorderSizePixel = 0
+KeyChip.Parent = TopBar
+
+local ChipCorner = Instance.new("UICorner")
+ChipCorner.CornerRadius = UDim.new(0, 6)
+ChipCorner.Parent = KeyChip
+
+local ChipStroke = Instance.new("UIStroke")
+ChipStroke.Thickness = 1
+ChipStroke.Color = Color3.fromRGB(70, 55, 105)
+ChipStroke.Parent = KeyChip
+
+local ChipText = Instance.new("TextLabel")
+ChipText.Size = UDim2.new(1, 0, 1, 0)
+ChipText.BackgroundTransparency = 1
+ChipText.Font = Enum.Font.GothamMedium
+ChipText.Text = "[Right Ctrl]"
+ChipText.TextColor3 = Color3.fromRGB(170, 140, 240)
+ChipText.TextSize = 10.5
+ChipText.Parent = KeyChip
 
 local CloseBtn = Instance.new("TextButton")
 CloseBtn.Name = "CloseBtn"
 CloseBtn.Size = UDim2.new(0, 28, 0, 28)
-CloseBtn.Position = UDim2.new(1, -36, 0, 7)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+CloseBtn.Position = UDim2.new(1, -36, 0.5, -14)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(36, 30, 52)
 CloseBtn.BorderSizePixel = 0
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.Text = "✕"
-CloseBtn.TextColor3 = Color3.fromRGB(255, 90, 90)
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 110, 110)
 CloseBtn.TextSize = 13
 CloseBtn.Parent = TopBar
 
 local CloseCorner = Instance.new("UICorner")
-CloseCorner.CornerRadius = UDim.new(0, 6)
+CloseCorner.CornerRadius = UDim.new(1, 0)
 CloseCorner.Parent = CloseBtn
 
--- Dragging
+CloseBtn.MouseEnter:Connect(function()
+    TweenService:Create(CloseBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(180, 35, 45), TextColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+end)
+CloseBtn.MouseLeave:Connect(function()
+    TweenService:Create(CloseBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(36, 30, 52), TextColor3 = Color3.fromRGB(255, 110, 110)}):Play()
+end)
+
+-- Dragging System
 local dragging, dragInput, dragStart, startPos
 TopBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -690,68 +846,152 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
+-- Content Frame
 local Content = Instance.new("Frame")
 Content.Name = "Content"
-Content.Size = UDim2.new(1, -20, 1, -50)
-Content.Position = UDim2.new(0, 10, 0, 48)
+Content.Size = UDim2.new(1, -20, 1, -56)
+Content.Position = UDim2.new(0, 10, 0, 52)
 Content.BackgroundTransparency = 1
 Content.BorderSizePixel = 0
 Content.Parent = Main
 
 local UIList = Instance.new("UIListLayout")
 UIList.SortOrder = Enum.SortOrder.LayoutOrder
-UIList.Padding = UDim.new(0, 8)
+UIList.Padding = UDim.new(0, 6)
 UIList.Parent = Content
 
--- Row 1: Keybind Selector
-local KeyRow = Instance.new("Frame")
-KeyRow.Name = "KeyRow"
-KeyRow.Size = UDim2.new(1, 0, 0, 48)
-KeyRow.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
-KeyRow.BorderSizePixel = 0
-KeyRow.Parent = Content
+-- Helper: Create Standard Card Row with Sticker Image
+local function CreateRowCard(name, height, iconAssetId, iconTint, titleText, titleColor)
+    local card = Instance.new("Frame")
+    card.Name = name
+    card.Size = UDim2.new(1, 0, 0, height)
+    card.BackgroundColor3 = Color3.fromRGB(22, 19, 34)
+    card.BorderSizePixel = 0
+    card.Parent = Content
 
-local KeyCorner = Instance.new("UICorner")
-KeyCorner.CornerRadius = UDim.new(0, 8)
-KeyCorner.Parent = KeyRow
+    local cardCorner = Instance.new("UICorner")
+    cardCorner.CornerRadius = UDim.new(0, 10)
+    cardCorner.Parent = card
 
-local KeyLabel = Instance.new("TextLabel")
-KeyLabel.Size = UDim2.new(0.65, 0, 0, 18)
-KeyLabel.Position = UDim2.new(0, 12, 0, 6)
-KeyLabel.BackgroundTransparency = 1
-KeyLabel.Font = Enum.Font.GothamSemibold
-KeyLabel.Text = "Auto Parry Keybind"
-KeyLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
-KeyLabel.TextSize = 13
-KeyLabel.TextXAlignment = Enum.TextXAlignment.Left
-KeyLabel.Parent = KeyRow
+    local cardStroke = Instance.new("UIStroke")
+    cardStroke.Thickness = 1
+    cardStroke.Color = Color3.fromRGB(48, 40, 70)
+    cardStroke.Parent = card
 
-local KeySub = Instance.new("TextLabel")
-KeySub.Size = UDim2.new(0.65, 0, 0, 16)
-KeySub.Position = UDim2.new(0, 12, 0, 25)
-KeySub.BackgroundTransparency = 1
-KeySub.Font = Enum.Font.Gotham
-KeySub.Text = "คลิกเพื่อเปลี่ยนปุ่มเปิด/ปิด"
-KeySub.TextColor3 = Color3.fromRGB(150, 150, 175)
-KeySub.TextSize = 10.5
-KeySub.TextXAlignment = Enum.TextXAlignment.Left
-KeySub.Parent = KeyRow
+    -- Left Sticker Badge
+    local iconBadge = Instance.new("Frame")
+    iconBadge.Size = UDim2.new(0, 28, 0, 28)
+    iconBadge.Position = UDim2.new(0, 8, 0.5, -14)
+    iconBadge.BackgroundColor3 = Color3.fromRGB(30, 25, 46)
+    iconBadge.BorderSizePixel = 0
+    iconBadge.Parent = card
 
+    local ibCorner = Instance.new("UICorner")
+    ibCorner.CornerRadius = UDim.new(0, 7)
+    ibCorner.Parent = iconBadge
+
+    local ibStroke = Instance.new("UIStroke")
+    ibStroke.Thickness = 1
+    ibStroke.Color = iconTint or Color3.fromRGB(85, 60, 130)
+    ibStroke.Parent = iconBadge
+
+    local iconImg = Instance.new("ImageLabel")
+    iconImg.Size = UDim2.new(0, 18, 0, 18)
+    iconImg.Position = UDim2.new(0.5, -9, 0.5, -9)
+    iconImg.BackgroundTransparency = 1
+    iconImg.Image = iconAssetId
+    if iconTint then
+        iconImg.ImageColor3 = iconTint
+    end
+    iconImg.ScaleType = Enum.ScaleType.Fit
+    iconImg.Parent = iconBadge
+
+    -- Clean Vertically-Centered English Title
+    local lbl = Instance.new("TextLabel")
+    lbl.Name = "TitleLabel"
+    lbl.Size = UDim2.new(0.58, 0, 0, 20)
+    lbl.Position = UDim2.new(0, 44, 0.5, -10)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamBold
+    lbl.Text = titleText
+    lbl.TextColor3 = titleColor or Color3.fromRGB(255, 255, 255)
+    lbl.TextSize = 13
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = card
+
+    return card
+end
+
+-- Helper: Create Standard Modern Switch
+local function CreateSwitch(parent, onColor)
+    local switch = Instance.new("TextButton")
+    switch.Name = "Switch"
+    switch.Size = UDim2.new(0, 46, 0, 24)
+    switch.Position = UDim2.new(1, -54, 0.5, -12)
+    switch.BackgroundColor3 = Color3.fromRGB(40, 36, 56)
+    switch.BorderSizePixel = 0
+    switch.Text = ""
+    switch.AutoButtonColor = false
+    switch.Parent = parent
+
+    local swCorner = Instance.new("UICorner")
+    swCorner.CornerRadius = UDim.new(1, 0)
+    swCorner.Parent = switch
+
+    local swStroke = Instance.new("UIStroke")
+    swStroke.Thickness = 1
+    swStroke.Color = Color3.fromRGB(65, 58, 88)
+    swStroke.Parent = switch
+
+    local knob = Instance.new("Frame")
+    knob.Name = "Knob"
+    knob.Size = UDim2.new(0, 18, 0, 18)
+    knob.Position = UDim2.new(0, 3, 0.5, -9)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.BorderSizePixel = 0
+    knob.Parent = switch
+
+    local knCorner = Instance.new("UICorner")
+    knCorner.CornerRadius = UDim.new(1, 0)
+    knCorner.Parent = knob
+
+    local function SetState(val)
+        local targetPos = val and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+        local targetBg = val and onColor or Color3.fromRGB(40, 36, 56)
+        local targetStroke = val and onColor or Color3.fromRGB(65, 58, 88)
+
+        TweenService:Create(knob, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetPos}):Play()
+        TweenService:Create(switch, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetBg}):Play()
+        TweenService:Create(swStroke, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Color = targetStroke}):Play()
+    end
+
+    return switch, SetState
+end
+
+-- ==========================================================
+-- ROW 1: Auto Parry Keybind
+-- ==========================================================
+local KeyRow = CreateRowCard("KeyRow", 42, "rbxassetid://121486627050870", Color3.fromRGB(255, 215, 110), "Parry Keybind", Color3.fromRGB(255, 215, 110))
 local KeyBtn = Instance.new("TextButton")
 KeyBtn.Name = "KeybindBtn"
-KeyBtn.Size = UDim2.new(0, 72, 0, 28)
-KeyBtn.Position = UDim2.new(1, -82, 0.5, -14)
-KeyBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 58)
+KeyBtn.Size = UDim2.new(0, 68, 0, 26)
+KeyBtn.Position = UDim2.new(1, -76, 0.5, -13)
+KeyBtn.BackgroundColor3 = Color3.fromRGB(36, 30, 52)
 KeyBtn.BorderSizePixel = 0
 KeyBtn.Font = Enum.Font.GothamBold
 KeyBtn.Text = "[" .. getgenv().fAstConfig.ParryKeybind.Name .. "]"
 KeyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-KeyBtn.TextSize = 12
+KeyBtn.TextSize = 11.5
 KeyBtn.Parent = KeyRow
 
-local BtnCorner = Instance.new("UICorner")
-BtnCorner.CornerRadius = UDim.new(0, 6)
-BtnCorner.Parent = KeyBtn
+local KeyBtnCorner = Instance.new("UICorner")
+KeyBtnCorner.CornerRadius = UDim.new(0, 6)
+KeyBtnCorner.Parent = KeyBtn
+
+local KeyBtnStroke = Instance.new("UIStroke")
+KeyBtnStroke.Thickness = 1
+KeyBtnStroke.Color = Color3.fromRGB(75, 60, 110)
+KeyBtnStroke.Parent = KeyBtn
 
 local listening = false
 KeyBtn.MouseButton1Click:Connect(function()
@@ -773,126 +1013,39 @@ KeyBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
--- Row 2: Auto Parry Switch (PVP Defense)
-local ParryRow = Instance.new("Frame")
-ParryRow.Name = "ParryRow"
-ParryRow.Size = UDim2.new(1, 0, 0, 50)
-ParryRow.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
-ParryRow.BorderSizePixel = 0
-ParryRow.Parent = Content
-
-local ParryCorner = Instance.new("UICorner")
-ParryCorner.CornerRadius = UDim.new(0, 8)
-ParryCorner.Parent = ParryRow
-
-local ParryLabel = Instance.new("TextLabel")
-ParryLabel.Size = UDim2.new(0.68, 0, 0, 20)
-ParryLabel.Position = UDim2.new(0, 12, 0, 5)
-ParryLabel.BackgroundTransparency = 1
-ParryLabel.Font = Enum.Font.GothamSemibold
-ParryLabel.Text = "Auto Parry"
-ParryLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-ParryLabel.TextSize = 13.5
-ParryLabel.TextXAlignment = Enum.TextXAlignment.Left
-ParryLabel.Parent = ParryRow
-
-local ParrySub = Instance.new("TextLabel")
-ParrySub.Size = UDim2.new(0.68, 0, 0, 16)
-ParrySub.Position = UDim2.new(0, 12, 0, 26)
-ParrySub.BackgroundTransparency = 1
-ParrySub.Font = Enum.Font.Gotham
-ParrySub.Text = "ป้องกันการโดนโจมตีจากศัตรู"
-ParrySub.TextColor3 = Color3.fromRGB(150, 150, 175)
-ParrySub.TextSize = 10.5
-ParrySub.TextXAlignment = Enum.TextXAlignment.Left
-ParrySub.Parent = ParryRow
-
-local Switch = Instance.new("TextButton")
-Switch.Name = "Switch"
-Switch.Size = UDim2.new(0, 48, 0, 26)
-Switch.Position = UDim2.new(1, -58, 0.5, -13)
-Switch.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
-Switch.BorderSizePixel = 0
-Switch.Text = ""
-Switch.AutoButtonColor = false
-Switch.Parent = ParryRow
-
-local SwitchCorner = Instance.new("UICorner")
-SwitchCorner.CornerRadius = UDim.new(1, 0)
-SwitchCorner.Parent = Switch
-
-local Knob = Instance.new("Frame")
-Knob.Name = "Knob"
-Knob.Size = UDim2.new(0, 20, 0, 20)
-Knob.Position = UDim2.new(0, 3, 0.5, -10)
-Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-Knob.BorderSizePixel = 0
-Knob.Parent = Switch
-
-local KnobCorner = Instance.new("UICorner")
-KnobCorner.CornerRadius = UDim.new(1, 0)
-KnobCorner.Parent = Knob
+-- ==========================================================
+-- ROW 2: Auto Parry
+-- ==========================================================
+local ParryRow = CreateRowCard("ParryRow", 42, "rbxassetid://10723346959", Color3.fromRGB(185, 120, 255), "Auto Parry", Color3.fromRGB(210, 160, 255))
+local ParrySwitch, SetParrySwitchState = CreateSwitch(ParryRow, Color3.fromRGB(150, 70, 255))
 
 local function SetParryState(val)
     getgenv().fAstConfig.AutoParry = val
-    local targetPos = val and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-    local targetColor = val and Color3.fromRGB(140, 60, 255) or Color3.fromRGB(45, 45, 58)
-
-    TweenService:Create(Knob, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetPos}):Play()
-    TweenService:Create(Switch, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor}):Play()
+    SetParrySwitchState(val)
 end
 
-Switch.MouseButton1Click:Connect(function()
+ParrySwitch.MouseButton1Click:Connect(function()
     SetParryState(not getgenv().fAstConfig.AutoParry)
     local txt = getgenv().fAstConfig.AutoParry and "AUTO PARRY: ON" or "AUTO PARRY: OFF"
     local col = getgenv().fAstConfig.AutoParry and Color3.fromRGB(50, 255, 120) or Color3.fromRGB(255, 70, 70)
     ShowHUDToast(txt, col)
 end)
 
--- Row 3: Target Boss Selector (Dropdown Menu)
-local BossRow = Instance.new("Frame")
-BossRow.Name = "BossRow"
-BossRow.Size = UDim2.new(1, 0, 0, 48)
-BossRow.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
-BossRow.BorderSizePixel = 0
+-- ==========================================================
+-- ROW 3: Target Boss Selector (Dropdown)
+-- ==========================================================
+local BossRow = CreateRowCard("BossRow", 42, "rbxassetid://10734975486", Color3.fromRGB(255, 185, 75), "Target Boss", Color3.fromRGB(255, 185, 75))
 BossRow.ClipsDescendants = true
-BossRow.Parent = Content
-
-local BossCorner = Instance.new("UICorner")
-BossCorner.CornerRadius = UDim.new(0, 8)
-BossCorner.Parent = BossRow
-
-local BossLabel = Instance.new("TextLabel")
-BossLabel.Size = UDim2.new(0.48, 0, 0, 18)
-BossLabel.Position = UDim2.new(0, 12, 0, 6)
-BossLabel.BackgroundTransparency = 1
-BossLabel.Font = Enum.Font.GothamSemibold
-BossLabel.Text = "Target Boss"
-BossLabel.TextColor3 = Color3.fromRGB(255, 170, 60)
-BossLabel.TextSize = 13
-BossLabel.TextXAlignment = Enum.TextXAlignment.Left
-BossLabel.Parent = BossRow
-
-local BossSub = Instance.new("TextLabel")
-BossSub.Size = UDim2.new(0.48, 0, 0, 16)
-BossSub.Position = UDim2.new(0, 12, 0, 25)
-BossSub.BackgroundTransparency = 1
-BossSub.Font = Enum.Font.Gotham
-BossSub.Text = "คลิกเพื่อเลือกบอส"
-BossSub.TextColor3 = Color3.fromRGB(150, 150, 175)
-BossSub.TextSize = 10.5
-BossSub.TextXAlignment = Enum.TextXAlignment.Left
-BossSub.Parent = BossRow
 
 local BossBtn = Instance.new("TextButton")
 BossBtn.Name = "BossSelectBtn"
-BossBtn.Size = UDim2.new(0, 135, 0, 28)
-BossBtn.Position = UDim2.new(1, -145, 0, 10)
-BossBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 58)
+BossBtn.Size = UDim2.new(0, 130, 0, 28)
+BossBtn.Position = UDim2.new(1, -138, 0, 7)
+BossBtn.BackgroundColor3 = Color3.fromRGB(36, 30, 54)
 BossBtn.BorderSizePixel = 0
 BossBtn.Font = Enum.Font.GothamBold
-BossBtn.Text = BossList[currentBossIndex].Display .. "  ▼"
-BossBtn.TextColor3 = Color3.fromRGB(255, 215, 100)
+BossBtn.Text = BossList[currentBossIndex].Display .. "  v"
+BossBtn.TextColor3 = Color3.fromRGB(255, 215, 110)
 BossBtn.TextSize = 11.5
 BossBtn.Parent = BossRow
 
@@ -900,24 +1053,28 @@ local BossBtnCorner = Instance.new("UICorner")
 BossBtnCorner.CornerRadius = UDim.new(0, 6)
 BossBtnCorner.Parent = BossBtn
 
--- Dropdown Menu Container (แผงเมนูเลื่อนลงมา)
+local BossBtnStroke = Instance.new("UIStroke")
+BossBtnStroke.Thickness = 1
+BossBtnStroke.Color = Color3.fromRGB(85, 65, 125)
+BossBtnStroke.Parent = BossBtn
+
 local DropdownContainer = Instance.new("Frame")
 DropdownContainer.Name = "DropdownContainer"
-DropdownContainer.Size = UDim2.new(1, -20, 0, #BossList * 27 + 6)
-DropdownContainer.Position = UDim2.new(0, 10, 0, 46)
-DropdownContainer.BackgroundColor3 = Color3.fromRGB(16, 16, 24)
+DropdownContainer.Size = UDim2.new(1, -16, 0, #BossList * 27 + 6)
+DropdownContainer.Position = UDim2.new(0, 8, 0, 40)
+DropdownContainer.BackgroundColor3 = Color3.fromRGB(15, 13, 22)
 DropdownContainer.BorderSizePixel = 0
 DropdownContainer.Visible = false
 DropdownContainer.ClipsDescendants = true
 DropdownContainer.Parent = BossRow
 
 local DropdownCorner = Instance.new("UICorner")
-DropdownCorner.CornerRadius = UDim.new(0, 6)
+DropdownCorner.CornerRadius = UDim.new(0, 8)
 DropdownCorner.Parent = DropdownContainer
 
 local DropdownStroke = Instance.new("UIStroke")
-DropdownStroke.Thickness = 1
-DropdownStroke.Color = Color3.fromRGB(120, 70, 200)
+DropdownStroke.Thickness = 1.2
+DropdownStroke.Color = Color3.fromRGB(130, 65, 220)
 DropdownStroke.Parent = DropdownContainer
 
 local DropdownLayout = Instance.new("UIListLayout")
@@ -939,11 +1096,13 @@ local function UpdateDropdownItems()
     for _, btn in ipairs(dropdownItemBtns) do
         local bDisplay = btn:GetAttribute("BossDisplay")
         if bDisplay == getgenv().fAstConfig.SelectedBoss then
-            btn.BackgroundColor3 = Color3.fromRGB(75, 40, 130)
+            btn.BackgroundColor3 = Color3.fromRGB(75, 35, 130)
             btn.TextColor3 = Color3.fromRGB(255, 230, 120)
+            btn.Text = "  > " .. bDisplay
         else
-            btn.BackgroundColor3 = Color3.fromRGB(25, 25, 36)
-            btn.TextColor3 = Color3.fromRGB(200, 200, 220)
+            btn.BackgroundColor3 = Color3.fromRGB(24, 20, 34)
+            btn.TextColor3 = Color3.fromRGB(195, 190, 215)
+            btn.Text = "     " .. bDisplay
         end
     end
 end
@@ -955,10 +1114,10 @@ local function ToggleDropdown(forceClose)
         isDropdownOpen = not isDropdownOpen
     end
 
-    local expandedRowH = 48 + (#BossList * 27 + 12)
-    local targetRowH = isDropdownOpen and expandedRowH or 48
-    local targetMainH = isDropdownOpen and (408 + (#BossList * 27 + 12)) or 408
-    local arrow = isDropdownOpen and "  ▲" or "  ▼"
+    local expandedRowH = 42 + (#BossList * 27 + 8)
+    local targetRowH = isDropdownOpen and expandedRowH or 42
+    local targetMainH = isDropdownOpen and (400 + (#BossList * 27 + 8)) or 400
+    local arrow = isDropdownOpen and "  ^" or "  v"
 
     BossBtn.Text = getgenv().fAstConfig.SelectedBoss .. arrow
 
@@ -968,7 +1127,7 @@ local function ToggleDropdown(forceClose)
     end
 
     TweenService:Create(BossRow, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 0, targetRowH)}):Play()
-    TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(0, 326, 0, targetMainH)}):Play()
+    TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(0, 338, 0, targetMainH)}):Play()
 
     if not isDropdownOpen then
         task.delay(0.2, function()
@@ -979,23 +1138,22 @@ local function ToggleDropdown(forceClose)
     end
 end
 
--- สร้างปุ่มตัวเลือกบอสแต่ละตัวใน Dropdown
 for idx, b in ipairs(BossList) do
     local ItemBtn = Instance.new("TextButton")
     ItemBtn.Name = "Item_" .. b.Id
     ItemBtn.Size = UDim2.new(1, 0, 0, 25)
-    ItemBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 36)
+    ItemBtn.BackgroundColor3 = Color3.fromRGB(24, 20, 34)
     ItemBtn.BorderSizePixel = 0
     ItemBtn.Font = Enum.Font.GothamSemibold
-    ItemBtn.Text = "  " .. b.Display
-    ItemBtn.TextColor3 = Color3.fromRGB(200, 200, 220)
+    ItemBtn.Text = "     " .. b.Display
+    ItemBtn.TextColor3 = Color3.fromRGB(195, 190, 215)
     ItemBtn.TextSize = 11.5
     ItemBtn.TextXAlignment = Enum.TextXAlignment.Left
     ItemBtn:SetAttribute("BossDisplay", b.Display)
     ItemBtn.Parent = DropdownContainer
 
     local ItemCorner = Instance.new("UICorner")
-    ItemCorner.CornerRadius = UDim.new(0, 4)
+    ItemCorner.CornerRadius = UDim.new(0, 5)
     ItemCorner.Parent = ItemBtn
 
     table.insert(dropdownItemBtns, ItemBtn)
@@ -1004,7 +1162,7 @@ for idx, b in ipairs(BossList) do
         currentBossIndex = idx
         getgenv().fAstConfig.SelectedBoss = b.Display
         getgenv().fAstConfig.SelectedBossId = b.Id
-        ShowHUDToast("Selected: " .. b.Display, Color3.fromRGB(255, 170, 60))
+        ShowHUDToast("Selected: " .. b.Display, Color3.fromRGB(255, 185, 75))
         ToggleDropdown(true)
     end)
 end
@@ -1013,149 +1171,33 @@ BossBtn.MouseButton1Click:Connect(function()
     ToggleDropdown()
 end)
 
--- Row 4: Auto Boss Switch
-local BossFightRow = Instance.new("Frame")
-BossFightRow.Name = "BossFightRow"
-BossFightRow.Size = UDim2.new(1, 0, 0, 50)
-BossFightRow.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
-BossFightRow.BorderSizePixel = 0
-BossFightRow.Parent = Content
-
-local BossFightCorner = Instance.new("UICorner")
-BossFightCorner.CornerRadius = UDim.new(0, 8)
-BossFightCorner.Parent = BossFightRow
-
-local BossFightLabel = Instance.new("TextLabel")
-BossFightLabel.Size = UDim2.new(0.68, 0, 0, 20)
-BossFightLabel.Position = UDim2.new(0, 12, 0, 5)
-BossFightLabel.BackgroundTransparency = 1
-BossFightLabel.Font = Enum.Font.GothamSemibold
-BossFightLabel.Text = "Auto Boss"
-BossFightLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-BossFightLabel.TextSize = 13.5
-BossFightLabel.TextXAlignment = Enum.TextXAlignment.Left
-BossFightLabel.Parent = BossFightRow
-
-local BossFightSub = Instance.new("TextLabel")
-BossFightSub.Size = UDim2.new(0.68, 0, 0, 16)
-BossFightSub.Position = UDim2.new(0, 12, 0, 26)
-BossFightSub.BackgroundTransparency = 1
-BossFightSub.Font = Enum.Font.Gotham
-BossFightSub.Text = "สู้บอสอัตโนมัติ + ตีโดน 100% ทุกดอก"
-BossFightSub.TextColor3 = Color3.fromRGB(150, 150, 175)
-BossFightSub.TextSize = 10.5
-BossFightSub.TextXAlignment = Enum.TextXAlignment.Left
-BossFightSub.Parent = BossFightRow
-
-local BossSwitch = Instance.new("TextButton")
-BossSwitch.Name = "BossSwitch"
-BossSwitch.Size = UDim2.new(0, 48, 0, 26)
-BossSwitch.Position = UDim2.new(1, -58, 0.5, -13)
-BossSwitch.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
-BossSwitch.BorderSizePixel = 0
-BossSwitch.Text = ""
-BossSwitch.AutoButtonColor = false
-BossSwitch.Parent = BossFightRow
-
-local BossSwitchCorner = Instance.new("UICorner")
-BossSwitchCorner.CornerRadius = UDim.new(1, 0)
-BossSwitchCorner.Parent = BossSwitch
-
-local BossKnob = Instance.new("Frame")
-BossKnob.Name = "BossKnob"
-BossKnob.Size = UDim2.new(0, 20, 0, 20)
-BossKnob.Position = UDim2.new(0, 3, 0.5, -10)
-BossKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-BossKnob.BorderSizePixel = 0
-BossKnob.Parent = BossSwitch
-
-local BossKnobCorner = Instance.new("UICorner")
-BossKnobCorner.CornerRadius = UDim.new(1, 0)
-BossKnobCorner.Parent = BossKnob
+-- ==========================================================
+-- ROW 4: Auto Boss
+-- ==========================================================
+local BossFightRow = CreateRowCard("BossFightRow", 42, "rbxassetid://10734975692", Color3.fromRGB(255, 125, 40), "Auto Boss", Color3.fromRGB(255, 140, 50))
+local BossSwitch, SetBossSwitchState = CreateSwitch(BossFightRow, Color3.fromRGB(255, 125, 40))
 
 local function SetBossFightState(val)
     getgenv().fAstConfig.AutoBoss = val
-    local targetPos = val and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-    local targetColor = val and Color3.fromRGB(255, 120, 40) or Color3.fromRGB(45, 45, 58)
-
-    TweenService:Create(BossKnob, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetPos}):Play()
-    TweenService:Create(BossSwitch, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor}):Play()
+    SetBossSwitchState(val)
 end
 
 BossSwitch.MouseButton1Click:Connect(function()
     SetBossFightState(not getgenv().fAstConfig.AutoBoss)
     local txt = getgenv().fAstConfig.AutoBoss and "BOSS BOT: ON" or "BOSS BOT: OFF"
-    local col = getgenv().fAstConfig.AutoBoss and Color3.fromRGB(255, 150, 50) or Color3.fromRGB(255, 70, 70)
+    local col = getgenv().fAstConfig.AutoBoss and Color3.fromRGB(255, 140, 50) or Color3.fromRGB(255, 70, 70)
     ShowHUDToast(txt, col)
 end)
 
--- Row 5: Auto Return Lobby Switch
-local ReturnRow = Instance.new("Frame")
-ReturnRow.Name = "ReturnRow"
-ReturnRow.Size = UDim2.new(1, 0, 0, 50)
-ReturnRow.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
-ReturnRow.BorderSizePixel = 0
-ReturnRow.Parent = Content
-
-local ReturnCorner = Instance.new("UICorner")
-ReturnCorner.CornerRadius = UDim.new(0, 8)
-ReturnCorner.Parent = ReturnRow
-
-local ReturnLabel = Instance.new("TextLabel")
-ReturnLabel.Size = UDim2.new(0.68, 0, 0, 20)
-ReturnLabel.Position = UDim2.new(0, 12, 0, 5)
-ReturnLabel.BackgroundTransparency = 1
-ReturnLabel.Font = Enum.Font.GothamSemibold
-ReturnLabel.Text = "Auto Return Lobby"
-ReturnLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-ReturnLabel.TextSize = 13.5
-ReturnLabel.TextXAlignment = Enum.TextXAlignment.Left
-ReturnLabel.Parent = ReturnRow
-
-local ReturnSub = Instance.new("TextLabel")
-ReturnSub.Size = UDim2.new(0.68, 0, 0, 16)
-ReturnSub.Position = UDim2.new(0, 12, 0, 26)
-ReturnSub.BackgroundTransparency = 1
-ReturnSub.Font = Enum.Font.Gotham
-ReturnSub.Text = "เมื่อบอสตาย กลับล็อบบี้ทันที"
-ReturnSub.TextColor3 = Color3.fromRGB(150, 150, 175)
-ReturnSub.TextSize = 10.5
-ReturnSub.TextXAlignment = Enum.TextXAlignment.Left
-ReturnSub.Parent = ReturnRow
-
-local ReturnSwitch = Instance.new("TextButton")
-ReturnSwitch.Name = "ReturnSwitch"
-ReturnSwitch.Size = UDim2.new(0, 48, 0, 26)
-ReturnSwitch.Position = UDim2.new(1, -58, 0.5, -13)
-ReturnSwitch.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
-ReturnSwitch.BorderSizePixel = 0
-ReturnSwitch.Text = ""
-ReturnSwitch.AutoButtonColor = false
-ReturnSwitch.Parent = ReturnRow
-
-local ReturnSwitchCorner = Instance.new("UICorner")
-ReturnSwitchCorner.CornerRadius = UDim.new(1, 0)
-ReturnSwitchCorner.Parent = ReturnSwitch
-
-local ReturnKnob = Instance.new("Frame")
-ReturnKnob.Name = "ReturnKnob"
-ReturnKnob.Size = UDim2.new(0, 20, 0, 20)
-ReturnKnob.Position = UDim2.new(0, 3, 0.5, -10)
-ReturnKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-ReturnKnob.BorderSizePixel = 0
-ReturnKnob.Parent = ReturnSwitch
-
-local ReturnKnobCorner = Instance.new("UICorner")
-ReturnKnobCorner.CornerRadius = UDim.new(1, 0)
-ReturnKnobCorner.Parent = ReturnKnob
+-- ==========================================================
+-- ROW 5: Auto Return Lobby
+-- ==========================================================
+local ReturnRow = CreateRowCard("ReturnRow", 42, "rbxassetid://76916186329249", Color3.fromRGB(45, 215, 125), "Auto Return Lobby", Color3.fromRGB(60, 230, 140))
+local ReturnSwitch, SetReturnSwitchState = CreateSwitch(ReturnRow, Color3.fromRGB(45, 215, 125))
 
 local function SetReturnLobbyState(val)
     getgenv().fAstConfig.AutoReturnLobby = val
-    local targetPos = val and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-    local targetColor = val and Color3.fromRGB(50, 220, 130) or Color3.fromRGB(45, 45, 58)
-
-    TweenService:Create(ReturnKnob, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetPos}):Play()
-    TweenService:Create(ReturnSwitch, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor}):Play()
+    SetReturnSwitchState(val)
 end
 
 ReturnSwitch.MouseButton1Click:Connect(function()
@@ -1165,25 +1207,57 @@ ReturnSwitch.MouseButton1Click:Connect(function()
     ShowHUDToast(txt, col)
 end)
 
--- Row 6: Fast Start Fight Button (เริ่มสู้บอสทันที)
+-- ==========================================================
+-- ROW 6: Auto Claim Rewards
+-- ==========================================================
+local RewardsRow = CreateRowCard("RewardsRow", 42, "rbxassetid://82668203286354", Color3.fromRGB(255, 105, 185), "Auto Claim Rewards", Color3.fromRGB(255, 105, 185))
+local RewardsSwitch, SetRewardsSwitchState = CreateSwitch(RewardsRow, Color3.fromRGB(255, 75, 175))
+
+local function SetClaimRewardsState(val)
+    getgenv().fAstConfig.AutoClaimRewards = val
+    SetRewardsSwitchState(val)
+    if val then
+        ClaimAllRewards(false)
+    end
+end
+
+RewardsSwitch.MouseButton1Click:Connect(function()
+    SetClaimRewardsState(not getgenv().fAstConfig.AutoClaimRewards)
+    local txt = getgenv().fAstConfig.AutoClaimRewards and "AUTO REWARDS: ON" or "AUTO REWARDS: OFF"
+    local col = getgenv().fAstConfig.AutoClaimRewards and Color3.fromRGB(255, 105, 185) or Color3.fromRGB(255, 70, 70)
+    ShowHUDToast(txt, col)
+end)
+
+-- ==========================================================
+-- ROW 7: ACTION BUTTONS (Start Fight & Claim Now)
+-- ==========================================================
+local ActionRow = Instance.new("Frame")
+ActionRow.Name = "ActionRow"
+ActionRow.Size = UDim2.new(1, 0, 0, 36)
+ActionRow.BackgroundTransparency = 1
+ActionRow.BorderSizePixel = 0
+ActionRow.Parent = Content
+
+-- Button Left: Start Boss Fight
 local StartFightBtn = Instance.new("TextButton")
 StartFightBtn.Name = "StartFightBtn"
-StartFightBtn.Size = UDim2.new(1, 0, 0, 34)
-StartFightBtn.BackgroundColor3 = Color3.fromRGB(45, 25, 75)
+StartFightBtn.Size = UDim2.new(0.63, -3, 1, 0)
+StartFightBtn.Position = UDim2.new(0, 0, 0, 0)
+StartFightBtn.BackgroundColor3 = Color3.fromRGB(75, 32, 130)
 StartFightBtn.BorderSizePixel = 0
 StartFightBtn.Font = Enum.Font.GothamBold
-StartFightBtn.Text = "⚔️ เริ่มสู้บอสทันที (Start Boss Fight)"
-StartFightBtn.TextColor3 = Color3.fromRGB(220, 180, 255)
+StartFightBtn.Text = "Fight Boss"
+StartFightBtn.TextColor3 = Color3.fromRGB(235, 205, 255)
 StartFightBtn.TextSize = 12
-StartFightBtn.Parent = Content
+StartFightBtn.Parent = ActionRow
 
 local StartCorner = Instance.new("UICorner")
-StartCorner.CornerRadius = UDim.new(0, 8)
+StartCorner.CornerRadius = UDim.new(0, 9)
 StartCorner.Parent = StartFightBtn
 
 local StartStroke = Instance.new("UIStroke")
-StartStroke.Thickness = 1
-StartStroke.Color = Color3.fromRGB(140, 60, 255)
+StartStroke.Thickness = 1.2
+StartStroke.Color = Color3.fromRGB(155, 75, 255)
 StartStroke.Parent = StartFightBtn
 
 StartFightBtn.MouseButton1Click:Connect(function()
@@ -1200,32 +1274,116 @@ StartFightBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ตั้งค่าสถานะเริ่มต้นของสวิตช์ตาม fAstConfig
+-- Button Right: Claim All Rewards Now
+local ClaimNowBtn = Instance.new("TextButton")
+ClaimNowBtn.Name = "ClaimNowBtn"
+ClaimNowBtn.Size = UDim2.new(0.37, -3, 1, 0)
+ClaimNowBtn.Position = UDim2.new(0.63, 3, 0, 0)
+ClaimNowBtn.BackgroundColor3 = Color3.fromRGB(130, 26, 75)
+ClaimNowBtn.BorderSizePixel = 0
+ClaimNowBtn.Font = Enum.Font.GothamBold
+ClaimNowBtn.Text = "Claim Rewards"
+ClaimNowBtn.TextColor3 = Color3.fromRGB(255, 210, 235)
+ClaimNowBtn.TextSize = 12
+ClaimNowBtn.Parent = ActionRow
+
+local ClaimCorner = Instance.new("UICorner")
+ClaimCorner.CornerRadius = UDim.new(0, 9)
+ClaimCorner.Parent = ClaimNowBtn
+
+local ClaimStroke = Instance.new("UIStroke")
+ClaimStroke.Thickness = 1.2
+ClaimStroke.Color = Color3.fromRGB(255, 80, 160)
+ClaimStroke.Parent = ClaimNowBtn
+
+ClaimNowBtn.MouseButton1Click:Connect(function()
+    ClaimAllRewards(false)
+end)
+
+-- ตั้งค่าสถานะเริ่มต้นของสวิตช์ตาม fAstConfig (ปิดทั้งหมดเป็นค่าเริ่มต้น)
 SetParryState(getgenv().fAstConfig.AutoParry)
 SetBossFightState(getgenv().fAstConfig.AutoBoss)
 SetReturnLobbyState(getgenv().fAstConfig.AutoReturnLobby)
+SetClaimRewardsState(getgenv().fAstConfig.AutoClaimRewards)
 
--- Menu Visibility Controls (กด [X] ปิดหมดเกลี้ยง ไม่มีปุ่มลอยกวนสายตา / กด [Right Ctrl] เพื่อเปิด/ปิด)
+-- Floating Quick Toggle Pill (ปุ่มลอยสำหรับคลิกเปิด/ปิด UI ได้ตลอดเวลา แม้อยู่ในคอมแบท)
+local FloatingPill = Instance.new("TextButton")
+FloatingPill.Name = "FloatingPill"
+FloatingPill.Size = UDim2.new(0, 92, 0, 28)
+FloatingPill.Position = UDim2.new(0.04, 0, 0.1, 0)
+FloatingPill.BackgroundColor3 = Color3.fromRGB(20, 16, 32)
+FloatingPill.BorderSizePixel = 0
+FloatingPill.Font = Enum.Font.GothamBold
+FloatingPill.Text = "⚡ fAst Hub"
+FloatingPill.TextColor3 = Color3.fromRGB(225, 185, 255)
+FloatingPill.TextSize = 11.5
+FloatingPill.Visible = not Main.Visible
+FloatingPill.Active = true
+FloatingPill.Parent = ScreenGui
+
+local PillCorner = Instance.new("UICorner")
+PillCorner.CornerRadius = UDim.new(0, 8)
+PillCorner.Parent = FloatingPill
+
+local PillStroke = Instance.new("UIStroke")
+PillStroke.Thickness = 1.2
+PillStroke.Color = Color3.fromRGB(155, 75, 255)
+PillStroke.Parent = FloatingPill
+
+-- Dragging System for FloatingPill
+local pDragging, pDragInput, pDragStart, pStartPos
+FloatingPill.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        pDragging = true
+        pDragStart = input.Position
+        pStartPos = FloatingPill.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                pDragging = false
+            end
+        end)
+    end
+end)
+FloatingPill.InputChanged:Connect(function(input)
+    if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and pDragging then
+        local delta = input.Position - pDragStart
+        FloatingPill.Position = UDim2.new(pStartPos.X.Scale, pStartPos.X.Offset + delta.X, pStartPos.Y.Scale, pStartPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- Menu Visibility Controls
 local function ToggleVisibility()
     Main.Visible = not Main.Visible
+    FloatingPill.Visible = not Main.Visible
     if not Main.Visible then
         ToggleDropdown(true)
+    else
+        pcall(function()
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        end)
     end
 end
 
+FloatingPill.MouseButton1Click:Connect(function()
+    ToggleVisibility()
+end)
+
 CloseBtn.MouseButton1Click:Connect(function()
     Main.Visible = false
+    FloatingPill.Visible = true
     ToggleDropdown(true)
-    ShowHUDToast("ปิดเมนูแล้ว (กด [Right Ctrl] เพื่อเปิดใหม่)", Color3.fromRGB(170, 90, 255))
+    ShowHUDToast("ปิดเมนูแล้ว (กด [Right Ctrl] หรือคลิกปุ่มลอย ⚡ เพื่อเปิด)", Color3.fromRGB(170, 90, 255))
 end)
 
 -- Keybind Listeners
 getgenv()._fAstInputConn = UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-
-    if input.KeyCode == Enum.KeyCode.RightControl then
+    -- เปิด/ปิดเมนูได้ 100% ตลอดเวลา แม้อยู่ระหว่างต่อสู้กับบอส (ไม่ต้องสนใจ processed)
+    if input.KeyCode == Enum.KeyCode.RightControl or input.KeyCode == Enum.KeyCode.Insert or input.KeyCode == Enum.KeyCode.RightAlt then
         ToggleVisibility()
+        return
     end
+
+    if processed then return end
 
     if input.KeyCode == getgenv().fAstConfig.ParryKeybind then
         SetParryState(not getgenv().fAstConfig.AutoParry)
@@ -1235,5 +1393,5 @@ getgenv()._fAstInputConn = UserInputService.InputBegan:Connect(function(input, p
     end
 end)
 
-ShowHUDToast("fAst Hub V10: Combo Engine Active!", Color3.fromRGB(255, 140, 40))
-print("[cook45] fAst Hub V10 (Relentless Combo Boss Engine) Active!")
+ShowHUDToast("⚡ fAst Hub v10 โหลดสำเร็จ (กด [Right Ctrl] หรือคลิกปุ่มลอยเพื่อเปิด)", Color3.fromRGB(170, 90, 255))
+print("[cook45] fAst Hub V10 (Modern Cyber Glass UI + Auto Rewards) Active!")
