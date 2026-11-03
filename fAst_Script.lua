@@ -1,4 +1,3 @@
-pcall(function() game:HttpGet("https://api.counterapi.dev/v1/fAst-Hub/script_runs/up") end)
 -- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
@@ -13,12 +12,28 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
 local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+
+-- รองรับทั้ง Delta (Android/iOS) และ PC Executor (gethui หรือ PlayerGui)
+local function GetSafeGuiParent()
+    if type(gethui) == "function" then
+        local ok, res = pcall(function()
+            local h = gethui()
+            if h then
+                local test = Instance.new("Folder")
+                test.Parent = h
+                test:Destroy()
+                return h
+            end
+        end)
+        if ok and res then return res end
+    end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+local guiParent = GetSafeGuiParent()
 local pgui = LocalPlayer:WaitForChild("PlayerGui")
-local guiParent = pgui
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local PlayerCharacter = Remotes:WaitForChild("PlayerCharacter")
 
@@ -44,8 +59,13 @@ pcall(function()
     if pgui:FindFirstChild("fAstToastGui") then pgui.fAstToastGui:Destroy() end
 end)
 
--- 2. ระบบ Auto-Run อัตโนมัติเมื่อย้ายห้อง / วาร์ปเข้าห้องดวล / เข้าเล่นแรงค์ (Queue On Teleport)
-local qot = (syn and syn.queue_on_teleport) or queue_on_teleport or queueonteleport or (fluxus and fluxus.queue_on_teleport)
+-- 2. ระบบ Auto-Run อัตโนมัติเมื่อย้ายห้อง / วาร์ปเข้าห้องดวล / เข้าเล่นแรงค์ (Queue On Teleport - รองรับ Delta / Fluxus / Synapse)
+local qot = (syn and syn.queue_on_teleport) 
+    or queue_on_teleport 
+    or queueonteleport 
+    or (fluxus and fluxus.queue_on_teleport)
+    or (Delta and Delta.queue_on_teleport)
+    or (getgenv and getgenv().queue_on_teleport)
 local teleportScript = [[
     repeat task.wait() until game:IsLoaded()
     task.wait(1.2)
@@ -1117,6 +1137,37 @@ Main.Visible = false
 Main.ClipsDescendants = true
 Main.Parent = ScreenGui
 
+-- ระบบปรับขนาดอัตโนมัติสำหรับหน้าจอมือถือ / แท็บเล็ต (Mobile Auto UIScale)
+local uiScale = Instance.new("UIScale")
+uiScale.Parent = Main
+local function AdjustResponsiveScale()
+    local cam = workspace.CurrentCamera
+    if cam and cam.ViewportSize.Y > 0 then
+        local vH = cam.ViewportSize.Y
+        if vH < 430 then
+            uiScale.Scale = math.clamp(vH / 430, 0.72, 1.0)
+        else
+            uiScale.Scale = 1.0
+        end
+    end
+end
+AdjustResponsiveScale()
+if workspace.CurrentCamera then
+    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(AdjustResponsiveScale)
+end
+
+-- Helper สำหรับผูกปุ่มให้ทำงานแม่นยำ 100% ทั้งเมาส์บน PC และระบบสัมผัส (Touch) บนมือถือ Delta
+local function BindClick(btn, callback)
+    local lastClick = 0
+    local function trigger()
+        if tick() - lastClick < 0.22 then return end
+        lastClick = tick()
+        callback()
+    end
+    btn.Activated:Connect(trigger)
+    btn.MouseButton1Click:Connect(trigger)
+end
+
 local MainGrad = Instance.new("UIGradient")
 MainGrad.Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0, Color3.fromRGB(24, 19, 40)),
@@ -1443,7 +1494,7 @@ local function StartListeningMenuKey()
     end)
 end
 
-MenuKeyBtn.MouseButton1Click:Connect(StartListeningMenuKey)
+BindClick(MenuKeyBtn, StartListeningMenuKey)
 
 -- ==========================================================
 -- ROW 2: Auto Parry Keybind
@@ -1471,7 +1522,7 @@ KeyBtnStroke.Color = Color3.fromRGB(75, 60, 110)
 KeyBtnStroke.Parent = KeyBtn
 
 local listening = false
-KeyBtn.MouseButton1Click:Connect(function()
+BindClick(KeyBtn, function()
     if listening then return end
     listening = true
     KeyBtn.Text = "[...]"
@@ -1503,7 +1554,7 @@ local function SetParryState(val)
     SaveConfig()
 end
 
-ParrySwitch.MouseButton1Click:Connect(function()
+BindClick(ParrySwitch, function()
     SetParryState(not getgenv().fAstConfig.AutoParry)
     local txt = getgenv().fAstConfig.AutoParry and "AUTO PARRY: ON" or "AUTO PARRY: OFF"
     local col = getgenv().fAstConfig.AutoParry and Color3.fromRGB(50, 255, 120) or Color3.fromRGB(255, 70, 70)
@@ -1637,7 +1688,7 @@ for idx, b in ipairs(BossList) do
 
     table.insert(dropdownItemBtns, ItemBtn)
 
-    ItemBtn.MouseButton1Click:Connect(function()
+    BindClick(ItemBtn, function()
         currentBossIndex = idx
         getgenv().fAstConfig.SelectedBoss = b.Display
         getgenv().fAstConfig.SelectedBossId = b.Id
@@ -1650,7 +1701,7 @@ for idx, b in ipairs(BossList) do
     end)
 end
 
-BossBtn.MouseButton1Click:Connect(function()
+BindClick(BossBtn, function()
     ToggleDropdown()
 end)
 
@@ -1777,7 +1828,7 @@ task.spawn(function()
     end
 end)
 
-BossSwitch.MouseButton1Click:Connect(function()
+BindClick(BossSwitch, function()
     SetBossFightState(not getgenv().fAstConfig.AutoBoss)
     local txt = getgenv().fAstConfig.AutoBoss and "BOSS BOT: ON" or "BOSS BOT: OFF"
     local col = getgenv().fAstConfig.AutoBoss and Color3.fromRGB(255, 140, 50) or Color3.fromRGB(255, 70, 70)
@@ -1796,7 +1847,7 @@ local function SetReturnLobbyState(val)
     SaveConfig()
 end
 
-ReturnSwitch.MouseButton1Click:Connect(function()
+BindClick(ReturnSwitch, function()
     SetReturnLobbyState(not getgenv().fAstConfig.AutoReturnLobby)
     local txt = getgenv().fAstConfig.AutoReturnLobby and "AUTO RETURN: ON" or "AUTO RETURN: OFF"
     local col = getgenv().fAstConfig.AutoReturnLobby and Color3.fromRGB(50, 255, 120) or Color3.fromRGB(255, 70, 70)
@@ -1818,7 +1869,7 @@ local function SetClaimRewardsState(val)
     end
 end
 
-RewardsSwitch.MouseButton1Click:Connect(function()
+BindClick(RewardsSwitch, function()
     SetClaimRewardsState(not getgenv().fAstConfig.AutoClaimRewards)
     local txt = getgenv().fAstConfig.AutoClaimRewards and "AUTO REWARDS: ON" or "AUTO REWARDS: OFF"
     local col = getgenv().fAstConfig.AutoClaimRewards and Color3.fromRGB(255, 105, 185) or Color3.fromRGB(255, 70, 70)
@@ -1844,69 +1895,116 @@ if getgenv().fAstConfig.AutoClaimRewards then
     ClaimAllRewards(true)
 end
 
--- Floating Quick Toggle Pill (ปิดการแสดงผลตามที่ผู้ใช้สั่ง เพื่อไม่ให้ปุ่ม ⚡ fAst Hub บังหน้าจอ)
-local FloatingPill = Instance.new("TextButton")
-FloatingPill.Name = "FloatingPill"
-FloatingPill.Size = UDim2.new(0, 92, 0, 28)
-FloatingPill.Position = UDim2.new(0.04, 0, 0.1, 0)
-FloatingPill.BackgroundColor3 = Color3.fromRGB(20, 16, 32)
-FloatingPill.BorderSizePixel = 0
-FloatingPill.Font = Enum.Font.GothamBold
-FloatingPill.Text = "⚡ fAst Hub"
-FloatingPill.TextColor3 = Color3.fromRGB(225, 185, 255)
-FloatingPill.TextSize = 11.5
-FloatingPill.Visible = false
-FloatingPill.Active = false
-FloatingPill.Parent = ScreenGui
+-- ==========================================================
+-- 9. FLOATING TOGGLE BUTTON (รองรับหน้าจอมือถือ & ตัวรัน Delta)
+-- ==========================================================
+local isMobile = UserInputService.TouchEnabled
 
-local PillCorner = Instance.new("UICorner")
-PillCorner.CornerRadius = UDim.new(0, 8)
-PillCorner.Parent = FloatingPill
+local FloatingToggle = Instance.new("TextButton")
+FloatingToggle.Name = "FloatingToggle"
+FloatingToggle.Size = UDim2.new(0, 38, 0, 38)
+FloatingToggle.Position = UDim2.new(0.02, 0, 0.22, 0)
+FloatingToggle.BackgroundColor3 = Color3.fromRGB(22, 17, 36)
+FloatingToggle.BorderSizePixel = 0
+FloatingToggle.Font = Enum.Font.GothamBold
+FloatingToggle.Text = "⚡"
+FloatingToggle.TextColor3 = Color3.fromRGB(255, 205, 75)
+FloatingToggle.TextSize = 18
+FloatingToggle.AutoButtonColor = false
+FloatingToggle.ZIndex = 99999
+FloatingToggle.Active = true
+FloatingToggle.Parent = ScreenGui
 
-local PillStroke = Instance.new("UIStroke")
-PillStroke.Thickness = 1.2
-PillStroke.Color = Color3.fromRGB(155, 75, 255)
-PillStroke.Parent = FloatingPill
+local ftCorner = Instance.new("UICorner")
+ftCorner.CornerRadius = UDim.new(1, 0)
+ftCorner.Parent = FloatingToggle
+
+local ftStroke = Instance.new("UIStroke")
+ftStroke.Thickness = 1.6
+ftStroke.Color = Color3.fromRGB(165, 85, 255)
+ftStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+ftStroke.Parent = FloatingToggle
+
+-- ระบบลากปุ่มลอยอิสระ (Drag Anywhere) รองรับทั้ง Touch บน Delta และ Mouse บน PC
+local ftDragging = false
+local ftDragStart = nil
+local ftStartPos = nil
+local ftWasDragged = false
+
+FloatingToggle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        ftDragging = true
+        ftWasDragged = false
+        ftDragStart = input.Position
+        ftStartPos = FloatingToggle.Position
+
+        local conn
+        conn = input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                ftDragging = false
+                if conn then conn:Disconnect() end
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if ftDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - ftDragStart
+        if delta.Magnitude > 6 then
+            ftWasDragged = true
+        end
+        FloatingToggle.Position = UDim2.new(
+            ftStartPos.X.Scale,
+            ftStartPos.X.Offset + delta.X,
+            ftStartPos.Y.Scale,
+            ftStartPos.Y.Offset + delta.Y
+        )
+    end
+end)
 
 -- Menu Visibility Controls
-local function ToggleVisibility()
+function ToggleVisibility()
     Main.Visible = not Main.Visible
-    FloatingPill.Visible = false
     if not Main.Visible then
         ToggleDropdown(true)
+        FloatingToggle.BackgroundTransparency = 0
+        ftStroke.Transparency = 0
+        FloatingToggle.TextTransparency = 0
     else
+        FloatingToggle.BackgroundTransparency = 0.45
+        ftStroke.Transparency = 0.45
+        FloatingToggle.TextTransparency = 0.3
         pcall(function()
             UserInputService.MouseBehavior = Enum.MouseBehavior.Default
         end)
     end
 end
 
+BindClick(FloatingToggle, function()
+    if not ftWasDragged then
+        ToggleVisibility()
+    end
+    ftWasDragged = false
+end)
+
 local function CloseMenu()
     Main.Visible = false
-    FloatingPill.Visible = false
+    FloatingToggle.BackgroundTransparency = 0
+    ftStroke.Transparency = 0
+    FloatingToggle.TextTransparency = 0
     ToggleDropdown(true)
-    -- ปิดเมนูแบบเงียบสนิท ไม่แสดงคำหรือกล่องปุ่มลอยกวนสายตา
 end
 
-CloseBtn.MouseButton1Down:Connect(CloseMenu)
-CloseBtn.Activated:Connect(CloseMenu)
-CloseBtn.MouseButton1Click:Connect(CloseMenu)
+BindClick(CloseBtn, CloseMenu)
+BindClick(KeyChip, ToggleVisibility)
 
-KeyChip.MouseButton1Down:Connect(ToggleVisibility)
-KeyChip.Activated:Connect(ToggleVisibility)
-KeyChip.MouseButton1Click:Connect(ToggleVisibility)
-
-FloatingPill.MouseButton1Down:Connect(ToggleVisibility)
-FloatingPill.Activated:Connect(ToggleVisibility)
-FloatingPill.MouseButton1Click:Connect(ToggleVisibility)
-
--- Keybind Listeners
+-- Keybind Listeners (สำหรับ PC และคีย์บอร์ดที่ต่อกับมือถือ)
 if getgenv()._fAstInputConn then
     pcall(function() getgenv()._fAstInputConn:Disconnect() end)
     getgenv()._fAstInputConn = nil
 end
 getgenv()._fAstInputConn = UserInputService.InputBegan:Connect(function(input, processed)
-    -- เปิด/ปิดเมนูได้ 100% ตลอดเวลา ตามปุ่มที่ตั้งไว้ (หรือ RightControl / Insert / RightAlt เป็นปุ่มสำรอง)
     local targetMenuKey = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind or Enum.KeyCode.RightControl
     if input.KeyCode == targetMenuKey 
        or input.KeyCode == Enum.KeyCode.RightControl 
@@ -1927,5 +2025,10 @@ getgenv()._fAstInputConn = UserInputService.InputBegan:Connect(function(input, p
 end)
 
 local startKeyName = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl"
-ShowHUDToast("⚡ fAst Hub พร้อมทำงาน (กด [" .. startKeyName .. "] เพื่อเปิดเมนู)", Color3.fromRGB(170, 90, 255))
+if isMobile then
+    ShowHUDToast("⚡ fAst Hub พร้อมใช้งาน (แตะไอคอน ⚡ เพื่อเปิด/ปิดเมนู)", Color3.fromRGB(170, 90, 255))
+else
+    ShowHUDToast("⚡ fAst Hub พร้อมใช้งาน (กด [" .. startKeyName .. "] หรือคลิก ⚡ เพื่อเปิดเมนู)", Color3.fromRGB(170, 90, 255))
+end
+print("[cook45] fAst Hub V10 (Mobile & Delta Cross-Platform Edition) Active!")
 print("[cook45] fAst Hub V10 (Modern Cyber Glass UI + Auto Rewards) Active!")
