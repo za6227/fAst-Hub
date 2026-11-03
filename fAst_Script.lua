@@ -44,24 +44,24 @@ pcall(function()
 end)
 
 -- 2. ระบบ Auto-Run อัตโนมัติเมื่อย้ายห้อง / วาร์ปเข้าห้องดวล / เข้าเล่นแรงค์ (Queue On Teleport)
-local queue_on_teleport = (syn and syn.queue_on_teleport) or queue_on_teleport or (fluxus and fluxus.queue_on_teleport)
+local qot = (syn and syn.queue_on_teleport) or queue_on_teleport or queueonteleport or (fluxus and fluxus.queue_on_teleport)
 local teleportScript = [[
     repeat task.wait() until game:IsLoaded()
-    task.wait(1.5)
+    task.wait(1.2)
     if isfile and isfile("fAstHub_DG.lua") then
         loadstring(readfile("fAstHub_DG.lua"))()
     elseif isfile and isfile("fAstHub_AutoExec.lua") then
         loadstring(readfile("fAstHub_AutoExec.lua"))()
     end
 ]]
-if queue_on_teleport and not getgenv()._fAstTeleportHooked then
-    getgenv()._fAstTeleportHooked = true
-    pcall(function() queue_on_teleport(teleportScript) end)
-    LocalPlayer.OnTeleport:Connect(function(state)
-        if state == Enum.TeleportState.Started then
-            pcall(function() queue_on_teleport(teleportScript) end)
-        end
-    end)
+if qot then
+    pcall(function() qot(teleportScript) end)
+    if not getgenv()._fAstTeleportHooked then
+        getgenv()._fAstTeleportHooked = true
+        LocalPlayer.OnTeleport:Connect(function(state)
+            pcall(function() qot(teleportScript) end)
+        end)
+    end
 end
 
 -- 3. ฟังก์ชันออริจินัลแท้ๆ จาก BaseActionManager (ไม่ซ้อน Hook)
@@ -105,11 +105,11 @@ end
 
 getgenv().fAstConfig = {
     MenuKeybind = oldCfg.MenuKeybind or (savedCfg.MenuKeyName and Enum.KeyCode[savedCfg.MenuKeyName]) or Enum.KeyCode.RightControl,
-    AutoParry = pickBool(oldCfg.AutoParry, savedCfg.AutoParry, false),
+    AutoParry = false, -- ค่าเริ่มต้นคือ OFF ทั้งหมด จนกว่าผู้เล่นจะเปิดเอง
     ParryKeybind = oldCfg.ParryKeybind or (savedCfg.ParryKeyName and Enum.KeyCode[savedCfg.ParryKeyName]) or Enum.KeyCode.V,
-    AutoBoss = pickBool(oldCfg.AutoBoss, savedCfg.AutoBoss, false),
-    AutoReturnLobby = pickBool(oldCfg.AutoReturnLobby, savedCfg.AutoReturnLobby, false),
-    AutoClaimRewards = pickBool(oldCfg.AutoClaimRewards, savedCfg.AutoClaimRewards, false),
+    AutoBoss = false, -- ค่าเริ่มต้นคือ OFF ทั้งหมด จนกว่าผู้เล่นจะเปิดเอง
+    AutoReturnLobby = false, -- ค่าเริ่มต้นคือ OFF ทั้งหมด จนกว่าผู้เล่นจะเปิดเอง
+    AutoClaimRewards = false, -- ค่าเริ่มต้นคือ OFF ทั้งหมด จนกว่าผู้เล่นจะเปิดเอง
     SelectedBoss = oldCfg.SelectedBoss or savedCfg.SelectedBoss or "Jack",
     SelectedBossId = oldCfg.SelectedBossId or savedCfg.SelectedBossId or "Jack"
 }
@@ -780,8 +780,13 @@ local function ReleaseCameraLock()
             handler.DesiredLookDirection = nil
             handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
             handler._desiredQueuedAction = nil
+            handler._desiredQueuedActionDuration = nil
             if handler.ActionManager then
                 handler.ActionManager._queuedActionType = nil
+                handler.ActionManager._queuedAction = nil
+                if handler.ActionManager.CurrentAction and handler.ActionManager.CurrentAction.CanCancel then
+                    pcall(function() handler.ActionManager:CancelCurrentAction() end)
+                end
             end
             if handler.PhysicsComponent and handler.PhysicsComponent.RootCollider then
                 handler.PhysicsComponent.RootCollider.CanCollide = true
@@ -828,9 +833,13 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
             hadBossFighting = false
             snappedFrames = 0
             local handler = CharacterController:GetLocalCharacterHandler()
-            if handler and handler.ActionManager then
-                handler.ActionManager._queuedActionType = nil
+            if handler then
                 handler._desiredQueuedAction = nil
+                handler._desiredQueuedActionDuration = nil
+                if handler.ActionManager then
+                    handler.ActionManager._queuedActionType = nil
+                    handler.ActionManager._queuedAction = nil
+                end
             end
             ReleaseCameraLock()
         end
@@ -843,6 +852,28 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     local myHum = handler.Humanoid
     if not myRoot or not myHum or myHum.Health <= 0 then return end
     local am = handler.ActionManager
+
+    -- ตรวจสอบว่าอยู่ใน Lobby, Event Hub หรือ SafeZone หรือไม่ (ห้ามโจมตีเด็ดขาด)
+    local char = LocalPlayer.Character or workspace:FindFirstChild("Player") or workspace:FindFirstChild("Player_Client")
+    local inSafe = (char and char:GetAttribute("InSafeZone") == true)
+        or (workspace:FindFirstChild("HalloweenEventHubMap") ~= nil)
+        or (workspace:FindFirstChild("LobbyMap") ~= nil)
+        or (game.PlaceId == 105077286193224)
+
+    if inSafe then
+        handler._desiredQueuedAction = nil
+        handler._desiredQueuedActionDuration = nil
+        if am then
+            am._queuedActionType = nil
+            am._queuedAction = nil
+        end
+        if hadBossFighting then
+            hadBossFighting = false
+            snappedFrames = 0
+            ReleaseCameraLock()
+        end
+        return
+    end
 
     -- ตรวจสอบว่าได้ Hook ระบบตีแม่นยำแล้วหรือยัง
     if not am._fAstUltHooked then
@@ -861,13 +892,18 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     -- [ตรวจสอบสถานะการต่อสู้]: บอสต้องยังมีชีวิตอยู่จริง (หยุดตีและปลดกล้องทันที 100%)
     if not targetBoss or not IsBossAlive(targetBoss) then
+        handler._desiredQueuedAction = nil
+        handler._desiredQueuedActionDuration = nil
+        if am then
+            am._queuedActionType = nil
+            am._queuedAction = nil
+        end
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
             snappedFrames = 0
-            handler._desiredQueuedAction = nil
-            if am then
-                am._queuedActionType = nil
+            if am and am.CurrentAction and am.CurrentAction.CanCancel then
+                pcall(function() am:CancelCurrentAction() end)
             end
             ReleaseCameraLock()
             ShowHUDToast("🏆 บอสตายแล้ว! หยุดโจมตีอัตโนมัติ", Color3.fromRGB(50, 255, 120))
@@ -880,14 +916,16 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     local bRoot = targetBoss:FindFirstChild("HumanoidRootPart")
     if not bRoot or not IsBossAlive(targetBoss) then
+        handler._desiredQueuedAction = nil
+        handler._desiredQueuedActionDuration = nil
+        if am then
+            am._queuedActionType = nil
+            am._queuedAction = nil
+        end
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
             snappedFrames = 0
-            handler._desiredQueuedAction = nil
-            if am then
-                am._queuedActionType = nil
-            end
             ReleaseCameraLock()
         end
         return
@@ -1006,14 +1044,19 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     local readyToStrike = (dist <= 8.5) or (isSim and snappedFrames >= 1)
 
     if not IsBossAlive(targetBoss) then
+        handler._desiredQueuedAction = nil
+        handler._desiredQueuedActionDuration = nil
+        if am then
+            am._queuedActionType = nil
+            am._queuedAction = nil
+            if am.CurrentAction and am.CurrentAction.CanCancel then
+                pcall(function() am:CancelCurrentAction() end)
+            end
+        end
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
             snappedFrames = 0
-            handler._desiredQueuedAction = nil
-            if am then
-                am._queuedActionType = nil
-            end
             ReleaseCameraLock()
         end
         return
@@ -1085,6 +1128,7 @@ Main.Position = UDim2.new(0.04, 0, 0.15, 0)
 Main.BackgroundColor3 = Color3.fromRGB(15, 13, 24)
 Main.BorderSizePixel = 0
 Main.Active = true
+Main.Visible = false
 Main.ClipsDescendants = true
 Main.Parent = ScreenGui
 
@@ -1796,13 +1840,13 @@ RewardsSwitch.MouseButton1Click:Connect(function()
     ShowHUDToast(txt, col)
 end)
 
--- ตั้งค่าสถานะเริ่มต้นของสวิตช์ตาม fAstConfig
-SetParryState(getgenv().fAstConfig.AutoParry)
-SetBossFightState(getgenv().fAstConfig.AutoBoss)
-SetReturnLobbyState(getgenv().fAstConfig.AutoReturnLobby)
-SetClaimRewardsState(getgenv().fAstConfig.AutoClaimRewards)
+-- ตั้งค่าสถานะเริ่มต้นของสวิตช์ให้เป็น OFF ทั้งหมด 100% จนกว่าจะเปิดเอง
+SetParryState(false)
+SetBossFightState(false)
+SetReturnLobbyState(false)
+SetClaimRewardsState(false)
 
--- Floating Quick Toggle Pill (ปุ่มลอยสำหรับคลิกเปิด/ปิด UI ได้ตลอดเวลา แม้อยู่ในคอมแบท)
+-- Floating Quick Toggle Pill (ปิดการแสดงผลตามที่ผู้ใช้สั่ง เพื่อไม่ให้ปุ่ม ⚡ fAst Hub บังหน้าจอ)
 local FloatingPill = Instance.new("TextButton")
 FloatingPill.Name = "FloatingPill"
 FloatingPill.Size = UDim2.new(0, 92, 0, 28)
@@ -1813,8 +1857,8 @@ FloatingPill.Font = Enum.Font.GothamBold
 FloatingPill.Text = "⚡ fAst Hub"
 FloatingPill.TextColor3 = Color3.fromRGB(225, 185, 255)
 FloatingPill.TextSize = 11.5
-FloatingPill.Visible = not Main.Visible
-FloatingPill.Active = true
+FloatingPill.Visible = false
+FloatingPill.Active = false
 FloatingPill.Parent = ScreenGui
 
 local PillCorner = Instance.new("UICorner")
@@ -1826,31 +1870,10 @@ PillStroke.Thickness = 1.2
 PillStroke.Color = Color3.fromRGB(155, 75, 255)
 PillStroke.Parent = FloatingPill
 
--- Dragging System for FloatingPill
-local pDragging, pDragInput, pDragStart, pStartPos
-FloatingPill.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        pDragging = true
-        pDragStart = input.Position
-        pStartPos = FloatingPill.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                pDragging = false
-            end
-        end)
-    end
-end)
-FloatingPill.InputChanged:Connect(function(input)
-    if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and pDragging then
-        local delta = input.Position - pDragStart
-        FloatingPill.Position = UDim2.new(pStartPos.X.Scale, pStartPos.X.Offset + delta.X, pStartPos.Y.Scale, pStartPos.Y.Offset + delta.Y)
-    end
-end)
-
 -- Menu Visibility Controls
 local function ToggleVisibility()
     Main.Visible = not Main.Visible
-    FloatingPill.Visible = not Main.Visible
+    FloatingPill.Visible = false
     if not Main.Visible then
         ToggleDropdown(true)
     else
@@ -1862,10 +1885,9 @@ end
 
 local function CloseMenu()
     Main.Visible = false
-    FloatingPill.Visible = true
+    FloatingPill.Visible = false
     ToggleDropdown(true)
-    local kName = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl"
-    ShowHUDToast("ปิดเมนูแล้ว (กด [" .. kName .. "] หรือคลิกปุ่มลอย ⚡ เพื่อเปิด)", Color3.fromRGB(170, 90, 255))
+    -- ปิดเมนูแบบเงียบสนิท ไม่แสดงคำหรือกล่องปุ่มลอยกวนสายตา
 end
 
 CloseBtn.MouseButton1Down:Connect(CloseMenu)
@@ -1907,5 +1929,5 @@ getgenv()._fAstInputConn = UserInputService.InputBegan:Connect(function(input, p
 end)
 
 local startKeyName = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl"
-ShowHUDToast("⚡ fAst Hub v10 โหลดสำเร็จ (กด [" .. startKeyName .. "] หรือคลิกปุ่มลอยเพื่อเปิด)", Color3.fromRGB(170, 90, 255))
+ShowHUDToast("⚡ fAst Hub พร้อมทำงาน (กด [" .. startKeyName .. "] เพื่อเปิดเมนู)", Color3.fromRGB(170, 90, 255))
 print("[cook45] fAst Hub V10 (Modern Cyber Glass UI + Auto Rewards) Active!")
