@@ -118,6 +118,15 @@ local BossList = {
 
 local currentBossIndex = 2 -- Default to The Headless Shogun
 
+local DifficultyList = {
+    {Id = "Auto", Display = "Auto (Max)"},
+    {Id = "Nightmare", Display = "Nightmare"},
+    {Id = "Hard", Display = "Hard"},
+    {Id = "Normal", Display = "Normal"}
+}
+
+local currentDiffIndex = 1
+
 -- // 4. CONFIG (พร้อมระบบบันทึกค่าข้ามห้อง fAstHub_Config.json) // --
 local HttpService = game:GetService("HttpService")
 local savedCfg = {}
@@ -145,7 +154,9 @@ getgenv().fAstConfig = {
     AutoReturnLobby = pickBool(oldCfg.AutoReturnLobby, savedCfg.AutoReturnLobby, true),
     AutoClaimRewards = pickBool(oldCfg.AutoClaimRewards, savedCfg.AutoClaimRewards, false),
     SelectedBoss = oldCfg.SelectedBoss or savedCfg.SelectedBoss or "The Headless Shogun",
-    SelectedBossId = oldCfg.SelectedBossId or savedCfg.SelectedBossId or "Shogun"
+    SelectedBossId = oldCfg.SelectedBossId or savedCfg.SelectedBossId or "Shogun",
+    SelectedDifficulty = oldCfg.SelectedDifficulty or savedCfg.SelectedDifficulty or "Auto (Max)",
+    SelectedDifficultyId = oldCfg.SelectedDifficultyId or savedCfg.SelectedDifficultyId or "Auto"
 }
 
 local function SaveConfig()
@@ -160,19 +171,61 @@ local function SaveConfig()
                 AutoReturnLobby = c.AutoReturnLobby,
                 AutoClaimRewards = c.AutoClaimRewards,
                 SelectedBoss = c.SelectedBoss,
-                SelectedBossId = c.SelectedBossId
+                SelectedBossId = c.SelectedBossId,
+                SelectedDifficulty = c.SelectedDifficulty,
+                SelectedDifficultyId = c.SelectedDifficultyId
             })
             writefile("fAstHub_Config.json", data)
         end
     end)
 end
 
--- ค้นหา index ปัจจุบันจาก config
+-- ค้นหา index ปัจจุบันของ Boss และ Difficulty จาก config
 for idx, b in ipairs(BossList) do
     if b.Display == getgenv().fAstConfig.SelectedBoss or b.Id == getgenv().fAstConfig.SelectedBossId then
         currentBossIndex = idx
         break
     end
+end
+
+for idx, d in ipairs(DifficultyList) do
+    if d.Display == getgenv().fAstConfig.SelectedDifficulty or d.Id == getgenv().fAstConfig.SelectedDifficultyId then
+        currentDiffIndex = idx
+        break
+    end
+end
+
+-- ฟังก์ชันเลือกระดับความยากที่ใช้งานได้จริงตามการปลดล็อคของตัวละคร
+local function GetResolvedDifficulty(bossId)
+    local diffId = getgenv().fAstConfig.SelectedDifficultyId or "Auto"
+    local ep = nil
+    pcall(function() ep = GameManager:GetController("EventProgressController") end)
+
+    if diffId == "Auto" or diffId == "Auto (Max)" or not diffId then
+        if ep and ep.IsDifficultyUnlocked then
+            if ep:IsDifficultyUnlocked(bossId, "Nightmare") then
+                return "Nightmare"
+            elseif ep:IsDifficultyUnlocked(bossId, "Hard") then
+                return "Hard"
+            else
+                return "Normal"
+            end
+        end
+        return "Normal"
+    end
+
+    if ep and ep.IsDifficultyUnlocked then
+        if ep:IsDifficultyUnlocked(bossId, diffId) then
+            return diffId
+        else
+            if diffId == "Nightmare" and ep:IsDifficultyUnlocked(bossId, "Hard") then
+                return "Hard"
+            end
+            return "Normal"
+        end
+    end
+
+    return diffId
 end
 
 -- HUD Toast Notification
@@ -290,12 +343,136 @@ local function GetMyRoot()
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
+-- [ฟังก์ชันช่วยปลดล็อคมุมกล้องและหยุดทุกระบบเมื่ออยู่นอกการต่อสู้หรือปิดบอท]
+local function ReleaseCameraLock()
+    pcall(function()
+        local tlc = GameManager and GameManager:GetController("TargetLockController")
+        if tlc then
+            tlc:SetForcedTargetLock(nil)
+            tlc:SetTarget(nil)
+            tlc.CriticalStrikeTarget = nil
+        end
+    end)
+    pcall(function()
+        if PlayerInputController and PlayerInputController.CurrentInput then
+            PlayerInputController.CurrentInput.MoveDirection = Vector3.new(0, 0, 0)
+        end
+        local handler = CharacterController and CharacterController:GetLocalCharacterHandler()
+        if handler then
+            handler.TargetLock = nil
+            handler.OverrideLookDirection = nil
+            handler.DesiredLookDirection = nil
+            handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
+            handler._desiredQueuedAction = nil
+            handler._desiredQueuedActionDuration = nil
+            if handler.ActionManager then
+                local am = handler.ActionManager
+                if am._clearQueuedAction then
+                    pcall(function() am:_clearQueuedAction(true) end)
+                end
+                am._queuedActionType = nil
+                am._queuedActionProperties = nil
+                am._queuedAction = nil
+                am._lastQueuedTime = nil
+                if am.CurrentAction and am.CurrentAction.CanCancel then
+                    pcall(function() am:CancelCurrentAction() end)
+                end
+            end
+        end
+        local cam = workspace.CurrentCamera
+        local hum = GetActualPlayerHumanoid()
+        if cam then
+            if hum and (cam.CameraSubject ~= hum or not cam.CameraSubject.Parent or not cam.CameraSubject:IsDescendantOf(workspace)) then
+                cam.CameraSubject = hum
+            end
+            if cam.CameraType ~= Enum.CameraType.Custom then
+                cam.CameraType = Enum.CameraType.Custom
+            end
+        end
+    end)
+end
+
+-- [ฟังก์ชันหยุดการโจมตี ล้างคิวออกทั้งหมด 100% ป้องกันการต่อยค้างใน Lobby]
+local function HardStopAllAttacks(handler, am)
+    pcall(function()
+        if not handler then
+            handler = CharacterController and CharacterController:GetLocalCharacterHandler()
+        end
+        if handler then
+            handler._desiredQueuedAction = nil
+            handler._desiredQueuedActionDuration = nil
+            handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
+            if not am then am = handler.ActionManager end
+        end
+        if am then
+            if am._clearQueuedAction then
+                pcall(function() am:_clearQueuedAction(true) end)
+            end
+            am._queuedActionType = nil
+            am._queuedActionProperties = nil
+            am._queuedAction = nil
+            am._lastQueuedTime = nil
+            if am.CurrentAction and am.CurrentAction.CanCancel then
+                pcall(function() am:CancelCurrentAction() end)
+            end
+        end
+        if PlayerInputController and PlayerInputController.CurrentInput then
+            PlayerInputController.CurrentInput.MoveDirection = Vector3.new(0, 0, 0)
+        end
+        ReleaseCameraLock()
+    end)
+end
+
+-- [ตรวจสอบว่าผู้เล่นอยู่ใน Lobby / Hub หรืออยู่นอกสนามประลองหรือไม่]
+local function IsInLobby()
+    local myRoot = GetMyRoot()
+    if not myRoot then return true end
+
+    -- 1. พิกัด Lobby ฮาโลวีน (X > 0 และ Z > -15000 โดยทั่วไปอยู่ที่ X ~ 2725, Z ~ -10797)
+    if myRoot.Position.X > 0 and myRoot.Position.Z > -15000 then
+        if workspace:FindFirstChild("HalloweenEventHubMap") or workspace:FindFirstChild("LobbyMap") then
+            return true
+        end
+    end
+
+    -- 2. แผนที่ Lobby ปกติ
+    if workspace:FindFirstChild("LobbyMap") and not workspace:FindFirstChild("HalloweenEventHubMap") then
+        local lm = workspace.LobbyMap
+        if myRoot:IsDescendantOf(lm) or (myRoot.Position.Y > 200) then
+            return true
+        end
+    end
+
+    -- 3. หน้าจอผลการต่อสู้ขึ้น (จบการแข่งขันแล้ว)
+    local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+    if pgui then
+        local rGui = pgui:FindFirstChild("MiniBossResultsGui")
+        if rGui and rGui.Enabled then return true end
+    end
+
+    -- 4. อยู่ใน SafeZone
+    local char = LocalPlayer.Character
+    if char and (char:GetAttribute("InSafeZone") == true) then
+        return true
+    end
+
+    return false
+end
+
 local function IsBossAlive(model)
     if not model or not model.Parent or not model:IsDescendantOf(workspace) then return false end
     if model == LocalPlayer.Character or model.Name == "Player_Client" or model.Name == "Player" then return false end
 
-    -- ห้ามเลือก NPC ใน Lobby/Hub (เช่น NPC ใน NPCs, NPCSpots, หรือแผนที่ Hub)
+    -- กรองผู้เล่นจริงทั้งหมดออก (ผู้เล่นไม่ใช่บอสเด็ดขาด)
+    if Players:GetPlayerFromCharacter(model) ~= nil then
+        return false
+    end
+
+    -- กรอง NPC ใน Lobby/Hub (เช่น Jack, GraveKeeper, CandyShop)
     if model.Parent and (model.Parent.Name == "NPCs" or model.Parent.Name == "NPCSpots") then
+        return false
+    end
+    if model.Name == "Jack" or model.Name == "GraveKeeper" or model.Name == "CandyShop" then
         return false
     end
     if workspace:FindFirstChild("HalloweenEventHubMap") and model:IsDescendantOf(workspace.HalloweenEventHubMap) then
@@ -379,6 +556,7 @@ local function IsCombatOpponent(model)
 end
 
 local function FindBossTarget(chosenBoss)
+    if IsInLobby() then return nil end
     local myRoot = GetMyRoot()
     if not myRoot then return nil end
     local char = LocalPlayer.Character
@@ -418,11 +596,11 @@ local function FindBossTarget(chosenBoss)
         end
     end
 
-    -- 2. Fallback จาก TargetLockController
+    -- 2. Fallback จาก TargetLockController (ต้องเป็นคู่ต่อสู้ที่ผ่าน IsCombatOpponent เท่านั้น)
     if #candidates == 0 then
         pcall(function()
             local tlc = GameManager:GetController("TargetLockController")
-            if tlc and tlc.Target and tlc.Target.Parent and tlc.Target.Parent ~= char and IsBossAlive(tlc.Target.Parent) then
+            if tlc and tlc.Target and tlc.Target.Parent and tlc.Target.Parent ~= char and IsCombatOpponent(tlc.Target.Parent) then
                 table.insert(candidates, tlc.Target.Parent)
             end
         end)
@@ -461,8 +639,10 @@ local function FindBossTarget(chosenBoss)
     return candidates[1]
 end
 
--- ค้นหาศัตรูเป้าหมาย (รองรับทั้งบอสและผู้เล่นใน PVP เพื่อให้อันติและฮิตบ็อกซ์เข้าเป้า 100%)
+-- ค้นหาศัตรูเป้าหมาย (รองรับทั้งบอสและคู่ต่อสู้ในสนามประลอง)
 local function FindAnyTarget()
+    if IsInLobby() then return nil end
+
     if getgenv().fAstConfig then
         local b = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
         if b and IsBossAlive(b) then return b end
@@ -471,7 +651,7 @@ local function FindAnyTarget()
     local tlcTarget = nil
     pcall(function()
         local tlc = GameManager:GetController("TargetLockController")
-        if tlc and tlc.Target and tlc.Target.Parent and IsBossAlive(tlc.Target.Parent) then
+        if tlc and tlc.Target and tlc.Target.Parent and IsCombatOpponent(tlc.Target.Parent) then
             tlcTarget = tlc.Target.Parent
         end
     end)
@@ -483,10 +663,10 @@ local function FindAnyTarget()
 
     local closest, closestDist = nil, 85
     for _, m in ipairs(workspace:GetChildren()) do
-        if m:IsA("Model") and m ~= char and m.Name ~= "Player_Client" then
+        if m:IsA("Model") and m ~= char and m.Name ~= "Player_Client" and Players:GetPlayerFromCharacter(m) == nil then
             local r = m:FindFirstChild("HumanoidRootPart")
             local h = m:FindFirstChildOfClass("Humanoid")
-            if r and h and IsBossAlive(m) then
+            if r and h and IsCombatOpponent(m) then
                 local d = (r.Position - myRoot.Position).Magnitude
                 if d < closestDist then
                     closest = m
@@ -500,20 +680,21 @@ end
 
 -- // 5.1 SILENT AIM / 100% HIT REGISTRATION HOOK (ตีและอันติโดนทุกครั้ง 100%) // --
 local function GetPerfectStrikeCFrame(origCF)
-    if typeof(origCF) ~= "CFrame" then return origCF end
+    if IsInLobby() then return origCF end
     local target = FindAnyTarget()
-    if target then
+    if target and IsBossAlive(target) then
         local bRoot = target:FindFirstChild("HumanoidRootPart")
         if bRoot then
-            local myPos = origCF.Position
             local bPos = bRoot.Position
-            local flatToB = Vector3.new(bPos.X - myPos.X, 0, bPos.Z - myPos.Z)
-            local dist = flatToB.Magnitude
-            local flatUnit = dist > 0.05 and flatToB.Unit or origCF.LookVector
-            -- เลื่อนพิกัดในระยะที่เซิร์ฟเวอร์ยอมรับ และหันหน้าเข้าหาจุดกึ่งกลางบอส 100%
-            local shift = math.clamp(dist - 2.3, -1.2, 2.2)
-            local strikePos = myPos + flatUnit * shift
-            return CFrame.lookAt(strikePos, Vector3.new(bPos.X, strikePos.Y, bPos.Z))
+            local myRoot = GetMyRoot()
+            local myPos = (myRoot and myRoot.Position) or (typeof(origCF) == "CFrame" and origCF.Position) or bPos
+            local toB = (bPos - myPos)
+            local flat = Vector3.new(toB.X, 0, toB.Z)
+            local unit = flat.Magnitude > 0.05 and flat.Unit or -bRoot.CFrame.LookVector
+            -- ฮิตบ็อกซ์ของอาวุธจะยื่นออกไปข้างหน้าตัวละครประมาณ 4 studs (hitboxCFrame = 0, 0, -4)
+            -- ดังนั้นการวางตำแหน่งอ้างอิงห่างจากบอส 2.5 studs หันหน้าเข้าหาบอส จะทำให้ตัวบอสอยู่กึ่งกลางฮิตบ็อกซ์ 100%
+            local strikePos = bPos - unit * 2.5
+            return CFrame.lookAt(strikePos, bPos)
         end
     end
     return origCF
@@ -527,10 +708,26 @@ task.spawn(function()
         local RequestHitboxOnImpact = req and req:WaitForChild("RequestHitboxOnImpact", 15)
         if not RequestHitboxOnImpact then return end
 
-        if restorefunction and isfunctionhooked and isfunctionhooked(RequestHitboxOnImpact.FireServer) then
-            restorefunction(RequestHitboxOnImpact.FireServer)
+        -- 1. Hook ผ่าน hookmetamethod (__namecall) เพื่อดักจับการยิงผ่าน RemoteEvent:FireServer(...)
+        if hookmetamethod and not getgenv()._fAstHitboxNamecallHooked then
+            getgenv()._fAstHitboxNamecallHooked = true
+            local oldNamecall
+            oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+                local method = getnamecallmethod()
+                if self == RequestHitboxOnImpact and method == "FireServer" then
+                    local args = {...}
+                    if #args >= 1 then
+                        args[1] = GetPerfectStrikeCFrame(args[1])
+                        return oldNamecall(self, unpack(args))
+                    end
+                end
+                return oldNamecall(self, ...)
+            end)
         end
-        if type(hookfunction) == "function" then
+
+        -- 2. Hook สำรองผ่าน hookfunction สำหรับกรณีเรียกตรงผ่าน dot (.FireServer)
+        if type(hookfunction) == "function" and not getgenv()._fAstHitboxFuncHooked then
+            getgenv()._fAstHitboxFuncHooked = true
             local oldHitboxFire
             oldHitboxFire = hookfunction(RequestHitboxOnImpact.FireServer, function(self, cf, t, id)
                 if self == RequestHitboxOnImpact then
@@ -566,6 +763,7 @@ end
 -- // 6. HOOK DEFENSE & ULTIMATE ENGINE // --
 local isPerformingUltimate = false
 local ultCastTime = 0
+local lastUltAttempt = 0
 
 local function ApplyCleanHook(char)
     task.spawn(function()
@@ -594,17 +792,22 @@ local function ApplyCleanHook(char)
                             local flat = Vector3.new(toB.X, 0, toB.Z)
                             local unit = flat.Magnitude > 0.05 and flat.Unit or myRoot.CFrame.LookVector
                             local snapCF = CFrame.lookAt(Vector3.new(bRoot.Position.X - unit.X * 2.0, bRoot.Position.Y, bRoot.Position.Z - unit.Z * 2.0), bRoot.Position)
-                            if handler.PhysicsComponent and handler.PhysicsComponent.IsPhysicsSimulated then
-                                myRoot.CFrame = snapCF
+                            myRoot.CFrame = snapCF
+                            myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                            handler._serverRootCFrame = snapCF
+                            pcall(function()
                                 PlayerCharacter.Request.UpdateCharacterCFrame:FireServer(snapCF)
-                            end
-                            PlayerCharacter.Request.SetDesiredLookDirection:FireServer(unit, 999)
-                            isPerformingUltimate = true
-                            ultCastTime = tick()
+                                PlayerCharacter.Request.SetDesiredLookDirection:FireServer(unit, 999)
+                            end)
                         end
                     end
                 end
-                return origTryQueue(self, attackType, ...)
+                local res = origTryQueue(self, attackType, ...)
+                if res and attackType == "Ultimate" then
+                    isPerformingUltimate = true
+                    ultCastTime = tick()
+                end
+                return res
             end
         end
 
@@ -617,10 +820,73 @@ local function ApplyCleanHook(char)
 
             -- ถ้าโดนโจมตีจากบอสและเปิด AutoBoss -> Parry 100%
             if isFromBoss and getgenv().fAstConfig and getgenv().fAstConfig.AutoBoss then
+                -- ปลดล็อคท่าโกงบอส: บังคับลบเงื่อนไข unparryable / unblockable ทุกท่า (รวมถึง Thrust, Ichimonji, Wave ในระดับ 2 และ 3)
+                impactData.unparryable = nil
+                impactData.unblockable = nil
+                impactData.undodgeable = nil
+
+                -- เพิ่ม Posture Damage สะท้อนกลับใส่บอสเมื่อแพรี่ เพื่อให้การ์ดบอสแตกเร็วขึ้น ชนะง่ายขึ้น
+                if impactData.impactResults then
+                    if not impactData.impactResults.Parry then
+                        impactData.impactResults.Parry = {
+                            effect = "Parry",
+                            postureDamage = -10,
+                            postureDamageAttacker = 45,
+                            staggerType = "Parry",
+                            staggerDuration = 0.8,
+                            staggerKnockback = 1
+                        }
+                    else
+                        local pRes = impactData.impactResults.Parry
+                        pRes.postureDamage = math.min(pRes.postureDamage or 0, -5)
+                        pRes.postureDamageAttacker = math.max(pRes.postureDamageAttacker or 20, 45)
+                    end
+                end
+
                 local oldP = handler.IsParrying
                 handler.IsParrying = true
                 local res = CleanOriginalCompute(self, impactData)
                 handler.IsParrying = oldP
+
+                -- เคาน์เตอร์ตีสวนกลับทันทีหลังแพรี่การโจมตีของบอส (Instant Counter Strike)
+                task.spawn(function()
+                    task.wait(0.04)
+                    pcall(function()
+                        if IsInLobby() then return end
+                        local target = FindAnyTarget()
+                        if not target or not IsBossAlive(target) then return end
+                        if handler and handler.ActionManager then
+                            local actMgr = handler.ActionManager
+                            if handler._forceClearBlockInput then
+                                handler:_forceClearBlockInput()
+                            elseif actMgr.BlockAction then
+                                actMgr.BlockAction._wantsToRelease = true
+                            end
+                            if actMgr._queuedActionType then
+                                if actMgr._clearQueuedAction then
+                                    pcall(function() actMgr:_clearQueuedAction(true) end)
+                                end
+                                actMgr._queuedActionType = nil
+                                actMgr._queuedActionProperties = nil
+                            end
+
+                            -- [ถ้าเกจอันติเต็ม 100% ให้ปล่อยอันติสวนกลับทันทีที่แพรี่การ์ดบอสแตก!]
+                            if handler:CanPerformUltimate() and (tick() - lastUltAttempt > 1.5) then
+                                lastUltAttempt = tick()
+                                isPerformingUltimate = true
+                                ultCastTime = tick()
+                                handler._desiredQueuedAction = "Ultimate"
+                                handler._desiredQueuedActionDuration = 0.8
+                                actMgr:TryQueueBasicAttack("Ultimate")
+                                return
+                            end
+
+                            handler._desiredQueuedAction = "LightAttack"
+                            actMgr:TryQueueBasicAttack("Light")
+                        end
+                    end)
+                end)
+
                 return res
             end
 
@@ -638,6 +904,33 @@ local function ApplyCleanHook(char)
             handler.IsParrying = true
             local res = CleanOriginalCompute(self, impactData)
             handler.IsParrying = oldP
+
+            -- เคาน์เตอร์ตีสวนกลับสำหรับ AutoParry ใน PVP ด้วยเช่นกัน
+            task.spawn(function()
+                task.wait(0.04)
+                pcall(function()
+                    if IsInLobby() then return end
+                    local target = FindAnyTarget()
+                    if not target or not IsBossAlive(target) then return end
+                    if handler and handler.ActionManager then
+                        local actMgr = handler.ActionManager
+                        if handler._forceClearBlockInput then
+                            handler:_forceClearBlockInput()
+                        elseif actMgr.BlockAction then
+                            actMgr.BlockAction._wantsToRelease = true
+                        end
+                        if actMgr._queuedActionType then
+                            if actMgr._clearQueuedAction then
+                                pcall(function() actMgr:_clearQueuedAction(true) end)
+                            end
+                            actMgr._queuedActionType = nil
+                            actMgr._queuedActionProperties = nil
+                        end
+                        handler._desiredQueuedAction = "LightAttack"
+                        actMgr:TryQueueBasicAttack("Light")
+                    end
+                end)
+            end)
 
             return res
         end
@@ -869,16 +1162,7 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         if hadBossFighting then
             hadBossFighting = false
             snappedFrames = 0
-            local handler = CharacterController:GetLocalCharacterHandler()
-            if handler then
-                handler._desiredQueuedAction = nil
-                handler._desiredQueuedActionDuration = nil
-                if handler.ActionManager then
-                    handler.ActionManager._queuedActionType = nil
-                    handler.ActionManager._queuedAction = nil
-                end
-            end
-            ReleaseCameraLock()
+            HardStopAllAttacks()
         end
         return
     end
@@ -890,21 +1174,20 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     if not myRoot or not myHum or myHum.Health <= 0 then return end
     local am = handler.ActionManager
 
-    -- ตรวจสอบว่าอยู่ใน SafeZone หรืออยู่นอกสนามต่อสู้หรือไม่ (หากยืนอยู่ในโซนปลอดภัยและไม่ได้ต่อสู้ ให้หยุดลูป)
-    local char = LocalPlayer.Character or workspace:FindFirstChild("Player") or workspace:FindFirstChild("Player_Client")
-    local inSafe = char and (char:GetAttribute("InSafeZone") == true) and (char:GetAttribute("InCombat") ~= true)
-
-    if inSafe then
-        handler._desiredQueuedAction = nil
-        handler._desiredQueuedActionDuration = nil
-        if am then
-            am._queuedActionType = nil
-            am._queuedAction = nil
-        end
+    -- [Hard Stop ใน Lobby]: ถ้าอยู่ใน Lobby หรือ SafeZone ให้ล้างคิวโจมตีทั้งหมดและเก็บอาวุธทันที
+    if IsInLobby() then
+        HardStopAllAttacks(handler, am)
         if hadBossFighting then
             hadBossFighting = false
+            isPerformingUltimate = false
             snappedFrames = 0
-            ReleaseCameraLock()
+            ShowHUDToast("🏠 อยู่ในล็อบบี้ หยุดการโจมตีทั้งหมด", Color3.fromRGB(180, 180, 255))
+        end
+        if handler.EquippedWeapon and (tick() - lastEquipTime > 1.0) then
+            lastEquipTime = tick()
+            pcall(function()
+                PlayerCharacter.Request.SetEquippedWeapon:FireServer(false)
+            end)
         end
         return
     end
@@ -914,53 +1197,36 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         ApplyCleanHook()
     end
 
-    -- สวมใส่อาวุธอัตโนมัติหากยังไม่ได้ถือ (เซิร์ฟเวอร์รับค่า boolean true)
-    if not handler.EquippedWeapon and (tick() - lastEquipTime > 1.5) then
-        lastEquipTime = tick()
-        pcall(function()
-            PlayerCharacter.Request.SetEquippedWeapon:FireServer(true)
-        end)
-    end
-
     local targetBoss = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
 
-    -- [ตรวจสอบสถานะการต่อสู้]: บอสต้องยังมีชีวิตอยู่จริง (หยุดตีและปลดกล้องทันที 100%)
+    -- [ตรวจสอบสถานะการต่อสู้]: บอสต้องยังมีชีวิตอยู่จริง (หยุดตี ปลดกล้อง และล้างคิวทันที 100%)
     if not targetBoss or not IsBossAlive(targetBoss) then
-        handler._desiredQueuedAction = nil
-        handler._desiredQueuedActionDuration = nil
-        if am then
-            am._queuedActionType = nil
-            am._queuedAction = nil
-        end
+        HardStopAllAttacks(handler, am)
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
             snappedFrames = 0
-            if am and am.CurrentAction and am.CurrentAction.CanCancel then
-                pcall(function() am:CancelCurrentAction() end)
-            end
-            ReleaseCameraLock()
             ShowHUDToast("🏆 บอสตายแล้ว! หยุดโจมตีอัตโนมัติ", Color3.fromRGB(50, 255, 120))
             if TriggerAutoReturnToLobby then
                 TriggerAutoReturnToLobby("BossDeathInCombat")
             end
+        end
+        if handler.EquippedWeapon and (tick() - lastEquipTime > 1.0) then
+            lastEquipTime = tick()
+            pcall(function()
+                PlayerCharacter.Request.SetEquippedWeapon:FireServer(false)
+            end)
         end
         return
     end
 
     local bRoot = targetBoss:FindFirstChild("HumanoidRootPart")
     if not bRoot or not IsBossAlive(targetBoss) then
-        handler._desiredQueuedAction = nil
-        handler._desiredQueuedActionDuration = nil
-        if am then
-            am._queuedActionType = nil
-            am._queuedAction = nil
-        end
+        HardStopAllAttacks(handler, am)
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
             snappedFrames = 0
-            ReleaseCameraLock()
         end
         return
     end
@@ -971,13 +1237,21 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     -- ตรวจสอบระยะต่อสู้ (ครอบคลุมทั้งสนามประลอง ไม่เกิน 400 studs)
     if dist > 400 then
+        HardStopAllAttacks(handler, am)
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
             snappedFrames = 0
-            ReleaseCameraLock()
         end
         return
+    end
+
+    -- สวมใส่อาวุธอัตโนมัติเมื่ออยู่ต่อหน้าบอสในสนามประลองเท่านั้น (dist <= 300)
+    if not handler.EquippedWeapon and (tick() - lastEquipTime > 1.5) then
+        lastEquipTime = tick()
+        pcall(function()
+            PlayerCharacter.Request.SetEquippedWeapon:FireServer(true)
+        end)
     end
 
     hadBossFighting = true
@@ -992,8 +1266,9 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     -- [ตรวจจับสถานะอันติ]: ดูว่าอยู่ในจังหวะร่ายหรือท่าอนิเมชันอันติหรือไม่
     local currentAct = am.CurrentAction
-    local actName = currentAct and tostring(currentAct.Name) or ""
-    local isUltActionActive = (currentAct and (currentAct.ActionType == "Ultimate" or string.find(actName, "Ultimate"))) or (tick() - ultCastTime < 1.8)
+    local actProps = currentAct and currentAct.Properties
+    local actAttackName = actProps and tostring(actProps.attackName) or ""
+    local isUltActionActive = (currentAct and (actAttackName == "Ultimate" or string.find(actAttackName, "Ultimate"))) or (isPerformingUltimate and (tick() - ultCastTime < 1.4))
     if not isUltActionActive then
         isPerformingUltimate = false
     end
@@ -1047,7 +1322,7 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         end)
     else
         snappedFrames = 0
-        if dist <= 8.5 then
+        if dist <= 350 then
             myRoot.CFrame = targetCF
             myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             handler._serverRootCFrame = targetCF
@@ -1071,70 +1346,125 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         PlayerInputController.CurrentInput.MoveDirection = moveDir
     end
 
-    -- [C] ระบบโจมตีอัตโนมัติแม่นยำ 100% (ตีทันทีเมื่ออยู่ในระยะ <= 12 studs หรือซิงค์ตำแหน่งแล้ว)
-    local readyToStrike = (dist <= 12) or (isSim and snappedFrames >= 1)
+    -- [C] ระบบโจมตีอัตโนมัติแม่นยำ 100% (ตีเมื่ออยู่ในระยะประชิด <= 3.8 studs ไม่ตีลมเด็ดขาด)
+    local readyToStrike = (dist <= 3.8) or (isSim and snappedFrames >= 1 and dist <= 4.0)
 
     if not IsBossAlive(targetBoss) then
-        handler._desiredQueuedAction = nil
-        handler._desiredQueuedActionDuration = nil
-        if am then
-            am._queuedActionType = nil
-            am._queuedAction = nil
-            if am.CurrentAction and am.CurrentAction.CanCancel then
-                pcall(function() am:CancelCurrentAction() end)
-            end
-        end
+        HardStopAllAttacks(handler, am)
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
             snappedFrames = 0
-            ReleaseCameraLock()
         end
         return
     end
 
-    -- 1. แทงปิดฉากเมื่อบอสการ์ดแตก (Critical Strike Finisher)
+    -- 1. ตรวจสอบสถานะศัตรูบล็อคแตก (Guard Break / Posture Break)
     local tlc = nil
     pcall(function() tlc = GameManager:GetController("TargetLockController") end)
     local critTarget = (tlc and tlc.CriticalStrikeTarget) or CharacterController.CriticalStrikeTarget
     local isOpenCrit = (bRoot:GetAttribute("OpenForCritical") == true) or ((targetBoss:GetAttribute("Posture") or 100) <= 0)
+    local isBlockBroken = isOpenCrit or (critTarget and critTarget.Parent and IsBossAlive(critTarget.Parent))
 
-    if ((critTarget and critTarget.Parent and IsBossAlive(critTarget.Parent)) or isOpenCrit) and IsBossAlive(targetBoss) then
-        pcall(function()
-            PlayerCharacter.Request.CriticalStrike:FireServer(targetBoss)
-        end)
-    end
+    local canUlt = false
+    pcall(function() canUlt = handler:CanPerformUltimate() end)
 
-    if isPerformingUltimate or isUltActionActive then
-        -- กำลังออกท่าอันติ: รอจนกว่าจะจบอนิเมชัน
+    if isUltActionActive then
+        -- กำลังออกท่าอันติ: ติดตามและล็อคตัวละครประกบหน้าบอสต่อเนื่องตลอดอนิเมชัน ไม่ให้บอสฉีกหนีหรือหลบหลุดฮิตบ็อกซ์
+        if bRoot and IsBossAlive(targetBoss) then
+            local toB = (bPos - myRoot.Position)
+            local flat = Vector3.new(toB.X, 0, toB.Z)
+            local ultUnit = flat.Magnitude > 0.05 and flat.Unit or -flatLook
+            local ultStickCF = CFrame.lookAt(bPos - ultUnit * 2.2, bPos)
+            myRoot.CFrame = ultStickCF
+            myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            handler.DesiredLookDirection = ultUnit
+            handler.OverrideLookDirection = ultUnit
+            pcall(function()
+                PlayerCharacter.Request.UpdateCharacterCFrame:FireServer(ultStickCF)
+                PlayerCharacter.Request.SetDesiredLookDirection:FireServer(ultUnit, 999)
+            end)
+        end
     elseif readyToStrike and IsBossAlive(targetBoss) then
-        -- 2. ปล่อย Ultimate ทันทีที่เกจเต็ม (100% Energy)
-        if handler:CanPerformUltimate() then
-            isPerformingUltimate = true
-            ultCastTime = tick()
+        -- ปลดบล็อกถ้าติดการ์ดหรือค้างบล็อกอยู่
+        if am.BlockAction and am.BlockAction.CanCancel and not handler.IsParrying then
+            if handler._forceClearBlockInput then
+                handler:_forceClearBlockInput()
+            else
+                am.BlockAction._wantsToRelease = true
+            end
+        end
 
-            myRoot.CFrame = targetCF
-            handler._desiredQueuedAction = "Ultimate"
-            am:TryQueueBasicAttack("Ultimate")
-            ShowHUDToast("🔥 ใช้อันติล็อกเป้าบอส (Ultimate)!", Color3.fromRGB(255, 60, 60))
+        -- Watchdog ป้องกันคิวตีติดค้างเกิน 0.35 วินาที
+        if am._queuedActionType then
+            if not am._lastQueuedTime then am._lastQueuedTime = tick() end
+            if tick() - am._lastQueuedTime > 0.35 then
+                am._queuedActionType = nil
+                am._queuedActionProperties = nil
+                am._lastQueuedTime = nil
+            end
         else
-            -- 3. ตีต่อเนื่องไม่ขาดตอน (Combo Relentless Attack)
+            am._lastQueuedTime = tick()
+        end
+
+        -- 2. ระบบอันติตามเมื่อศัตรูบล็อคแตก หรือจังหวะการ์ดร้าว (Ultimate Engine)
+        local bossPosture = targetBoss:GetAttribute("Posture") or 100
+        local bossMaxPosture = targetBoss:GetAttribute("MaxPosture") or 150
+        local isPostureCracked = (bossPosture < bossMaxPosture * 0.65)
+        local shouldUnleashUlt = isBlockBroken or isPostureCracked or (tick() - lastUltAttempt > 2.5)
+
+        local ultSuccess = false
+        if canUlt and shouldUnleashUlt and (tick() - lastUltAttempt > 1.2) then
+            lastUltAttempt = tick()
+            myRoot.CFrame = targetCF
+            if handler._forceClearBlockInput then handler:_forceClearBlockInput() end
+            if am._queuedActionType then
+                am._queuedActionType = nil
+                am._queuedActionProperties = nil
+            end
+            if am.CurrentAction and am.CurrentAction.CanCancel then
+                pcall(function() am:CancelCurrentAction() end)
+            end
+            handler._desiredQueuedAction = "Ultimate"
+            handler._desiredQueuedActionDuration = 0.8
+            ultSuccess = am:TryQueueBasicAttack("Ultimate")
+            if ultSuccess then
+                isPerformingUltimate = true
+                ultCastTime = tick()
+            end
+        end
+
+        -- 3. ถ้าบล็อคแตกแต่อันติยังไม่พร้อม ให้แทงปิดฉาก Critical Strike แทน
+        if isBlockBroken and not ultSuccess and not isPerformingUltimate then
+            if am and am.CurrentAction and am.CurrentAction.CanCancel then
+                pcall(function() am:CancelCurrentAction() end)
+            end
+            pcall(function()
+                PlayerCharacter.Request.CriticalStrike:FireServer(targetBoss)
+            end)
+        end
+
+        -- 4. โจมตีปกติแบบต่อเนื่องไม่ขาดตอน (Relentless Combo) เพื่อเร่งให้ศัตรูบล็อคแตก
+        if not isBlockBroken and not ultSuccess and not isPerformingUltimate then
             local canQueue = false
             if not currentAct then
                 canQueue = true
             else
-                canQueue = currentAct.CanQueueActions or currentAct.CanQueueBasicAttacks or currentAct.CanCancel
+                canQueue = currentAct.CanQueueActions or currentAct.CanQueueBasicAttacks or currentAct.CanCancel or currentAct.CanChainBasicAttack
             end
 
-            if canQueue and not am._queuedActionType and IsBossAlive(targetBoss) then
+            if (canQueue or not am.CurrentAction) and not am._queuedActionType and IsBossAlive(targetBoss) then
                 handler._desiredQueuedAction = "LightAttack"
-                am:TryQueueBasicAttack("Light")
+                local qOk = am:TryQueueBasicAttack("Light")
+                if not qOk and currentAct and currentAct.CanCancel then
+                    pcall(function() am:CancelCurrentAction() end)
+                    am:TryQueueBasicAttack("Light")
+                end
             end
         end
     else
-        -- บอสฉีกหนีเกินระยะ 8.5 studs หรือบอสตาย: ล้างคิวโจมตีค้างทันที
-        handler._desiredQueuedAction = nil
-        am._queuedActionType = nil
+        -- บอสฉีกหนีเกินระยะ หรือบอสตาย: ล้างคิวโจมตีค้างทันที
+        HardStopAllAttacks(handler, am)
     end
 end)
 
@@ -1155,7 +1485,7 @@ ScreenGui.Parent = guiParent
 
 local Main = Instance.new("Frame")
 Main.Name = "MainFrame"
-Main.Size = UDim2.new(0, 338, 0, 392)
+Main.Size = UDim2.new(0, 338, 0, 440)
 Main.Position = UDim2.new(0.04, 0, 0.15, 0)
 Main.BackgroundColor3 = Color3.fromRGB(15, 13, 24)
 Main.BorderSizePixel = 0
@@ -1171,8 +1501,8 @@ local function AdjustResponsiveScale()
     local cam = workspace.CurrentCamera
     if cam and cam.ViewportSize.Y > 0 then
         local vH = cam.ViewportSize.Y
-        if vH < 430 then
-            uiScale.Scale = math.clamp(vH / 430, 0.72, 1.0)
+        if vH < 475 then
+            uiScale.Scale = math.clamp(vH / 475, 0.65, 1.0)
         else
             uiScale.Scale = 1.0
         end
@@ -1664,16 +1994,21 @@ local function UpdateDropdownItems()
     end
 end
 
+local ToggleDiffDropdown = nil
+
 local function ToggleDropdown(forceClose)
     if forceClose then
         isDropdownOpen = false
     else
         isDropdownOpen = not isDropdownOpen
+        if isDropdownOpen and ToggleDiffDropdown then
+            ToggleDiffDropdown(true)
+        end
     end
 
     local expandedRowH = 42 + (#BossList * 27 + 8)
     local targetRowH = isDropdownOpen and expandedRowH or 42
-    local targetMainH = isDropdownOpen and (392 + (#BossList * 27 + 8)) or 392
+    local targetMainH = isDropdownOpen and (440 + (#BossList * 27 + 8)) or 440
     local arrow = isDropdownOpen and "  ^" or "  v"
 
     BossBtn.Text = getgenv().fAstConfig.SelectedBoss .. arrow
@@ -1733,6 +2068,153 @@ BindClick(BossBtn, function()
 end)
 
 -- ==========================================================
+-- ROW 4: Boss Difficulty Selector (Dropdown)
+-- ==========================================================
+local DiffRow = CreateRowCard("DiffRow", 42, "rbxassetid://10709791437", Color3.fromRGB(255, 95, 95), "Difficulty", Color3.fromRGB(255, 125, 125))
+DiffRow.ClipsDescendants = true
+
+local DiffBtn = Instance.new("TextButton")
+DiffBtn.Name = "DiffSelectBtn"
+DiffBtn.Size = UDim2.new(0, 130, 0, 28)
+DiffBtn.Position = UDim2.new(1, -138, 0, 7)
+DiffBtn.BackgroundColor3 = Color3.fromRGB(36, 30, 54)
+DiffBtn.BorderSizePixel = 0
+DiffBtn.Font = Enum.Font.GothamBold
+DiffBtn.Text = (DifficultyList[currentDiffIndex] and DifficultyList[currentDiffIndex].Display or "Auto (Max)") .. "  v"
+DiffBtn.TextColor3 = Color3.fromRGB(255, 145, 145)
+DiffBtn.TextSize = 11.5
+DiffBtn.Parent = DiffRow
+
+local DiffBtnCorner = Instance.new("UICorner")
+DiffBtnCorner.CornerRadius = UDim.new(0, 6)
+DiffBtnCorner.Parent = DiffBtn
+
+local DiffBtnStroke = Instance.new("UIStroke")
+DiffBtnStroke.Thickness = 1
+DiffBtnStroke.Color = Color3.fromRGB(115, 55, 85)
+DiffBtnStroke.Parent = DiffBtn
+
+local DiffDropdownContainer = Instance.new("Frame")
+DiffDropdownContainer.Name = "DiffDropdownContainer"
+DiffDropdownContainer.Size = UDim2.new(1, -16, 0, #DifficultyList * 27 + 6)
+DiffDropdownContainer.Position = UDim2.new(0, 8, 0, 40)
+DiffDropdownContainer.BackgroundColor3 = Color3.fromRGB(15, 13, 22)
+DiffDropdownContainer.BorderSizePixel = 0
+DiffDropdownContainer.Visible = false
+DiffDropdownContainer.ClipsDescendants = true
+DiffDropdownContainer.Parent = DiffRow
+
+local DiffDropdownCorner = Instance.new("UICorner")
+DiffDropdownCorner.CornerRadius = UDim.new(0, 8)
+DiffDropdownCorner.Parent = DiffDropdownContainer
+
+local DiffDropdownStroke = Instance.new("UIStroke")
+DiffDropdownStroke.Thickness = 1.2
+DiffDropdownStroke.Color = Color3.fromRGB(220, 65, 95)
+DiffDropdownStroke.Parent = DiffDropdownContainer
+
+local DiffDropdownLayout = Instance.new("UIListLayout")
+DiffDropdownLayout.SortOrder = Enum.SortOrder.LayoutOrder
+DiffDropdownLayout.Padding = UDim.new(0, 2)
+DiffDropdownLayout.Parent = DiffDropdownContainer
+
+local DiffDropdownPadding = Instance.new("UIPadding")
+DiffDropdownPadding.PaddingTop = UDim.new(0, 3)
+DiffDropdownPadding.PaddingBottom = UDim.new(0, 3)
+DiffDropdownPadding.PaddingLeft = UDim.new(0, 4)
+DiffDropdownPadding.PaddingRight = UDim.new(0, 4)
+DiffDropdownPadding.Parent = DiffDropdownContainer
+
+local isDiffDropdownOpen = false
+local diffDropdownItemBtns = {}
+
+local function UpdateDiffDropdownItems()
+    for _, btn in ipairs(diffDropdownItemBtns) do
+        local dDisplay = btn:GetAttribute("DiffDisplay")
+        if dDisplay == getgenv().fAstConfig.SelectedDifficulty then
+            btn.BackgroundColor3 = Color3.fromRGB(130, 35, 65)
+            btn.TextColor3 = Color3.fromRGB(255, 230, 120)
+            btn.Text = "  > " .. dDisplay
+        else
+            btn.BackgroundColor3 = Color3.fromRGB(24, 20, 34)
+            btn.TextColor3 = Color3.fromRGB(215, 190, 205)
+            btn.Text = "     " .. dDisplay
+        end
+    end
+end
+
+ToggleDiffDropdown = function(forceClose)
+    if forceClose then
+        isDiffDropdownOpen = false
+    else
+        isDiffDropdownOpen = not isDiffDropdownOpen
+        if isDiffDropdownOpen then
+            ToggleDropdown(true)
+        end
+    end
+
+    local expandedRowH = 42 + (#DifficultyList * 27 + 8)
+    local targetRowH = isDiffDropdownOpen and expandedRowH or 42
+    local targetMainH = isDiffDropdownOpen and (440 + (#DifficultyList * 27 + 8)) or 440
+    local arrow = isDiffDropdownOpen and "  ^" or "  v"
+
+    DiffBtn.Text = getgenv().fAstConfig.SelectedDifficulty .. arrow
+
+    if isDiffDropdownOpen then
+        DiffDropdownContainer.Visible = true
+        UpdateDiffDropdownItems()
+    end
+
+    TweenService:Create(DiffRow, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 0, targetRowH)}):Play()
+    TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(0, 338, 0, targetMainH)}):Play()
+
+    if not isDiffDropdownOpen then
+        task.delay(0.2, function()
+            if not isDiffDropdownOpen then
+                DiffDropdownContainer.Visible = false
+            end
+        end)
+    end
+end
+
+for idx, d in ipairs(DifficultyList) do
+    local ItemBtn = Instance.new("TextButton")
+    ItemBtn.Name = "DiffItem_" .. d.Id
+    ItemBtn.Size = UDim2.new(1, 0, 0, 25)
+    ItemBtn.BackgroundColor3 = Color3.fromRGB(24, 20, 34)
+    ItemBtn.BorderSizePixel = 0
+    ItemBtn.Font = Enum.Font.GothamSemibold
+    ItemBtn.Text = "     " .. d.Display
+    ItemBtn.TextColor3 = Color3.fromRGB(215, 190, 205)
+    ItemBtn.TextSize = 11.5
+    ItemBtn.TextXAlignment = Enum.TextXAlignment.Left
+    ItemBtn:SetAttribute("DiffDisplay", d.Display)
+    ItemBtn.Parent = DiffDropdownContainer
+
+    local ItemCorner = Instance.new("UICorner")
+    ItemCorner.CornerRadius = UDim.new(0, 5)
+    ItemCorner.Parent = ItemBtn
+
+    table.insert(diffDropdownItemBtns, ItemBtn)
+
+    BindClick(ItemBtn, function()
+        currentDiffIndex = idx
+        getgenv().fAstConfig.SelectedDifficulty = d.Display
+        getgenv().fAstConfig.SelectedDifficultyId = d.Id
+        SaveConfig()
+        ShowHUDToast("Difficulty: " .. d.Display, Color3.fromRGB(255, 115, 115))
+        ToggleDiffDropdown(true)
+        if getgenv().fAstConfig.AutoBoss then
+            StartBossFightNow()
+        end
+    end)
+end
+
+BindClick(DiffBtn, function()
+    ToggleDiffDropdown()
+end)
+
+-- ==========================================================
 -- ROW 4: Auto Boss
 -- ==========================================================
 local BossFightRow = CreateRowCard("BossFightRow", 42, "rbxassetid://10734975692", Color3.fromRGB(255, 125, 40), "Auto Boss", Color3.fromRGB(255, 140, 50))
@@ -1749,15 +2231,14 @@ end)
 local isStartingBossFight = false
 
 local function IsInActiveFight()
+    if IsInLobby() then return false end
     local char = LocalPlayer.Character or workspace:FindFirstChild("Player") or workspace:FindFirstChild("Player_Client")
     if not char then return false end
     if char:GetAttribute("InSafeZone") == true then
         return false
     end
-    if char:GetAttribute("InCombat") == true then
-        return true
-    end
-    if FindBossTarget("Auto (Any)") ~= nil then
+    local targetBoss = FindBossTarget(getgenv().fAstConfig and getgenv().fAstConfig.SelectedBoss or "Auto (Any)")
+    if targetBoss and IsBossAlive(targetBoss) then
         return true
     end
     return false
@@ -1811,19 +2292,43 @@ local function StartBossFightNow()
                 end
             end)
 
-            ShowHUDToast("กำลังวาร์ปเข้าสู้บอส " .. bId .. "...", Color3.fromRGB(255, 180, 50))
+            local targetDiff = GetResolvedDifficulty(bId)
+            ShowHUDToast("กำลังวาร์ปเข้าสู้บอส " .. bId .. " [" .. targetDiff .. "]...", Color3.fromRGB(255, 180, 50))
 
-            -- 3. เรียกเริ่มสู้บอสผ่าน EventProgressController
+            -- 3. เรียกเริ่มสู้บอสผ่าน EventProgressController ตามระดับความยากที่เลือก
             local ep = GameManager:GetController("EventProgressController")
             if ep and ep.RequestStartFight then
-                ep:RequestStartFight(bId, "Normal")
+                ep:RequestStartFight(bId, targetDiff)
             end
 
             -- ยิงตรงสำรองผ่าน RemoteEvent
             local epRemotes = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("EventProgress")
             if epRemotes and epRemotes:FindFirstChild("Request_StartFight") then
-                epRemotes.Request_StartFight:FireServer(bId, "Normal")
+                epRemotes.Request_StartFight:FireServer(bId, targetDiff)
             end
+
+            -- หากมีหน้าต่าง MiniBossStartGui เด้งขึ้นมา ให้เลือกความยากและกดยืนยันอัตโนมัติ
+            pcall(function()
+                local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+                local sGui = pgui and pgui:FindFirstChild("MiniBossStartGui")
+                if sGui and sGui.Enabled then
+                    local stage = sGui:FindFirstChild("Screen") and sGui.Screen:FindFirstChild("Stage")
+                    local col = stage and stage:FindFirstChild("Column")
+                    local diffs = col and col:FindFirstChild("Difficulties")
+                    local targetBtn = diffs and diffs:FindFirstChild(targetDiff)
+                    if targetBtn and getconnections then
+                        for _, c in ipairs(getconnections(targetBtn.Activated)) do
+                            c:Fire()
+                        end
+                    end
+                    local fightBtn = col and col:FindFirstChild("FightButton")
+                    if fightBtn and getconnections then
+                        for _, c in ipairs(getconnections(fightBtn.Activated)) do
+                            c:Fire()
+                        end
+                    end
+                end
+            end)
         end)
         task.wait(2.0)
         isStartingBossFight = false
@@ -1840,11 +2345,7 @@ local function SetBossFightState(val)
         hadBossFighting = false
         snappedFrames = 0
         local handler = CharacterController:GetLocalCharacterHandler()
-        if handler and handler.ActionManager then
-            handler.ActionManager._queuedActionType = nil
-            handler._desiredQueuedAction = nil
-        end
-        ReleaseCameraLock()
+        HardStopAllAttacks(handler)
     end
 end
 
