@@ -13,8 +13,13 @@ local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 local guiParent = (gethui and gethui()) or CoreGui:FindFirstChild("RobloxGui") or CoreGui or LocalPlayer:WaitForChild("PlayerGui")
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local PlayerCharacter = Remotes:WaitForChild("PlayerCharacter")
 
 -- 1. ล้าง Hook, ลูป และ GUI เก่าออกทั้งหมด
+local myRunToken = os.clock()
+getgenv()._fAstRunToken = myRunToken
+
 if getgenv()._JackLoop then pcall(function() getgenv()._JackLoop:Disconnect() end) getgenv()._JackLoop = nil end
 if getgenv()._fAstLoop then pcall(function() getgenv()._fAstLoop:Disconnect() end) getgenv()._fAstLoop = nil end
 if getgenv()._BossCombatLoop then pcall(function() getgenv()._BossCombatLoop:Disconnect() end) getgenv()._BossCombatLoop = nil end
@@ -31,12 +36,22 @@ if guiParent:FindFirstChild("fAstToastGui") then guiParent.fAstToastGui:Destroy(
 local queue_on_teleport = (syn and syn.queue_on_teleport) or queue_on_teleport or (fluxus and fluxus.queue_on_teleport)
 if queue_on_teleport and not getgenv()._fAstTeleportHooked then
     getgenv()._fAstTeleportHooked = true
+    pcall(function()
+        queue_on_teleport([[
+            task.wait(1.5)
+            if isfile and isfile("fAstHub_DG.lua") then
+                loadstring(readfile("fAstHub_DG.lua"))()
+            end
+        ]])
+    end)
     LocalPlayer.OnTeleport:Connect(function(state)
         if state == Enum.TeleportState.Started then
             pcall(function()
                 queue_on_teleport([[
                     task.wait(1.5)
-                    loadstring(readfile("fAstHub_DG.lua"))()
+                    if isfile and isfile("fAstHub_DG.lua") then
+                        loadstring(readfile("fAstHub_DG.lua"))()
+                    end
                 ]])
             end)
         end
@@ -55,6 +70,7 @@ local CleanOriginalCompute = BaseActionManager._computeImpactResolution
 
 local GameManager = require(ReplicatedStorage:WaitForChild("GameManager"))
 local CharacterController = GameManager:GetController("CharacterController")
+local PlayerInputController = GameManager:GetController("PlayerInputController")
 
 -- รายการบอสที่สามารถเลือกสู้ได้
 local BossList = {
@@ -68,17 +84,54 @@ local BossList = {
 
 local currentBossIndex = 2 -- Default to Jack
 
--- // 4. CONFIG // --
+-- // 4. CONFIG (พร้อมระบบบันทึกค่าข้ามห้อง fAstHub_Config.json) // --
+local HttpService = game:GetService("HttpService")
+local savedCfg = {}
+pcall(function()
+    if isfile and readfile and isfile("fAstHub_Config.json") then
+        local decoded = HttpService:JSONDecode(readfile("fAstHub_Config.json"))
+        if type(decoded) == "table" then
+            savedCfg = decoded
+        end
+    end
+end)
+
 local oldCfg = getgenv().fAstConfig or {}
+local function pickBool(a, b, default)
+    if type(a) == "boolean" then return a end
+    if type(b) == "boolean" then return b end
+    return default
+end
+
 getgenv().fAstConfig = {
-    AutoParry = false,
-    ParryKeybind = oldCfg.ParryKeybind or Enum.KeyCode.V,
-    AutoBoss = false,
-    AutoReturnLobby = false,
-    AutoClaimRewards = false,
-    SelectedBoss = oldCfg.SelectedBoss or "Jack",
-    SelectedBossId = oldCfg.SelectedBossId or "Jack"
+    MenuKeybind = oldCfg.MenuKeybind or (savedCfg.MenuKeyName and Enum.KeyCode[savedCfg.MenuKeyName]) or Enum.KeyCode.RightControl,
+    AutoParry = pickBool(oldCfg.AutoParry, savedCfg.AutoParry, false),
+    ParryKeybind = oldCfg.ParryKeybind or (savedCfg.ParryKeyName and Enum.KeyCode[savedCfg.ParryKeyName]) or Enum.KeyCode.V,
+    AutoBoss = pickBool(oldCfg.AutoBoss, savedCfg.AutoBoss, false),
+    AutoReturnLobby = pickBool(oldCfg.AutoReturnLobby, savedCfg.AutoReturnLobby, false),
+    AutoClaimRewards = pickBool(oldCfg.AutoClaimRewards, savedCfg.AutoClaimRewards, false),
+    SelectedBoss = oldCfg.SelectedBoss or savedCfg.SelectedBoss or "Jack",
+    SelectedBossId = oldCfg.SelectedBossId or savedCfg.SelectedBossId or "Jack"
 }
+
+local function SaveConfig()
+    pcall(function()
+        if writefile and getgenv().fAstConfig then
+            local c = getgenv().fAstConfig
+            local data = HttpService:JSONEncode({
+                MenuKeyName = c.MenuKeybind and c.MenuKeybind.Name or "RightControl",
+                AutoParry = c.AutoParry,
+                ParryKeyName = c.ParryKeybind and c.ParryKeybind.Name or "V",
+                AutoBoss = c.AutoBoss,
+                AutoReturnLobby = c.AutoReturnLobby,
+                AutoClaimRewards = c.AutoClaimRewards,
+                SelectedBoss = c.SelectedBoss,
+                SelectedBossId = c.SelectedBossId
+            })
+            writefile("fAstHub_Config.json", data)
+        end
+    end)
+end
 
 -- ค้นหา index ปัจจุบันจาก config
 for idx, b in ipairs(BossList) do
@@ -158,14 +211,71 @@ end
 HookAllBossHazards()
 
 -- // 5. TARGETING & BOSS DETECTION SYSTEM // --
+local function GetActualPlayerHumanoid()
+    local handler = CharacterController:GetLocalCharacterHandler()
+    if handler and handler.Humanoid and handler.Humanoid.Parent and handler.Humanoid:IsDescendantOf(workspace) then
+        return handler.Humanoid
+    end
+    local pc = workspace:FindFirstChild("Player_Client")
+    local pcHum = pc and pc:FindFirstChildOfClass("Humanoid")
+    if pcHum and pcHum.Parent and pcHum:IsDescendantOf(workspace) then
+        return pcHum
+    end
+    local wp = workspace:FindFirstChild("Player")
+    local wpHum = wp and wp:FindFirstChildOfClass("Humanoid")
+    if wpHum and wpHum.Parent and wpHum:IsDescendantOf(workspace) then
+        return wpHum
+    end
+    local char = LocalPlayer.Character
+    local charHum = char and char:FindFirstChildOfClass("Humanoid")
+    if charHum and charHum.Parent and charHum:IsDescendantOf(workspace) then
+        return charHum
+    end
+    local pNameModel = workspace:FindFirstChild(LocalPlayer.Name)
+    local pNameHum = pNameModel and pNameModel:FindFirstChildOfClass("Humanoid")
+    if pNameHum and pNameHum.Parent and pNameHum:IsDescendantOf(workspace) then
+        return pNameHum
+    end
+    return nil
+end
+
+local function GetMyRoot()
+    local handler = CharacterController:GetLocalCharacterHandler()
+    if handler and handler.Root and handler.Root.Parent and handler.Root:IsDescendantOf(workspace) then
+        return handler.Root
+    end
+    local pc = workspace:FindFirstChild("Player_Client")
+    if pc and pc:FindFirstChild("HumanoidRootPart") then
+        return pc.HumanoidRootPart
+    end
+    local wp = workspace:FindFirstChild("Player")
+    if wp and wp:FindFirstChild("HumanoidRootPart") then
+        return wp.HumanoidRootPart
+    end
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
 local function IsBossAlive(model)
-    if not model or not model.Parent then return false end
+    if not model or not model.Parent or not model:IsDescendantOf(workspace) then return false end
+    if model == LocalPlayer.Character or model.Name == "Player_Client" or model.Name == "Player" then return false end
 
     -- ห้ามเลือก NPC ใน Lobby/Hub (เช่น NPC ใน NPCs, NPCSpots, หรือแผนที่ Hub)
     if model.Parent and (model.Parent.Name == "NPCs" or model.Parent.Name == "NPCSpots") then
         return false
     end
     if workspace:FindFirstChild("HalloweenEventHubMap") and model:IsDescendantOf(workspace.HalloweenEventHubMap) then
+        return false
+    end
+    if workspace:FindFirstChild("LobbyMap") and model:IsDescendantOf(workspace.LobbyMap) then
+        return false
+    end
+
+    -- บอสติดสถานะตาย / จบการต่อสู้ / ห้ามโจมตี (หยุดตีทันที 100%)
+    if model:GetAttribute("IsUntargetable") == true then
+        return false
+    end
+    if model:GetAttribute("Dead") == true or model:GetAttribute("IsDead") == true then
         return false
     end
 
@@ -179,58 +289,104 @@ local function IsBossAlive(model)
         return false
     end
 
-    if model:GetAttribute("Dead") == true or model:GetAttribute("IsDead") == true then
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then
         return false
     end
 
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health <= 0 then
+    local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+    local rGui = pgui and pgui:FindFirstChild("MiniBossResultsGui")
+    if rGui and rGui.Enabled then
         return false
     end
 
     return true
 end
 
-local function FindBossTarget(chosenBoss)
-    -- ถ้าอยู่ในหน้า Lobby/Event Hub จะไม่มีบอสให้สู้ในสนาม ห้ามเล็ง NPC ในล็อบบี้เด็ดขาด
-    if workspace:FindFirstChild("HalloweenEventHubMap") or game.PlaceId == 105077286193224 then
-        return nil
+local function IsCombatOpponent(model)
+    if not IsBossAlive(model) then return false end
+    local myRoot = GetMyRoot()
+    local bRoot = model:FindFirstChild("HumanoidRootPart")
+    if not myRoot or not bRoot then return false end
+
+    -- ต้องอยู่ในสนามประลองเดียวกัน (ไม่เกิน 350 studs) เพื่อไม่ให้ไปดึงบอสของผู้เล่นคนอื่นที่อยู่อีกสนาม (ห่างออกไป 6,000+ studs)
+    if (bRoot.Position - myRoot.Position).Magnitude > 350 then
+        return false
     end
 
     local char = LocalPlayer.Character
-    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil end
+    local myInCombat = char and (char:GetAttribute("InCombat") == true)
+    local myMatch = LocalPlayer:GetAttribute("InMatch")
+    local myGroup = char and char:GetAttribute("HitboxGroup")
 
+    -- ถ้าตัวเราไม่ได้อยู่ในแมตช์และไม่ได้อยู่ในสถานะต่อสู้ แปลว่ายืนอยู่ใน Lobby/Hub -> ไม่มีเป้าหมายบอส
+    if not myInCombat and myMatch == nil then
+        return false
+    end
+
+    local modelMatch = model:GetAttribute("InMatch")
+    if modelMatch ~= nil and myMatch ~= nil and modelMatch ~= myMatch then
+        return false
+    end
+
+    local modelGroup = model:GetAttribute("HitboxGroup")
+    if myGroup ~= nil and modelGroup ~= nil and modelGroup ~= myGroup then
+        return false
+    end
+
+    if model:GetAttribute("MiniBossKit") ~= nil or string.find(model.Name, "^MiniBoss_") then
+        return true
+    end
+    if model:GetAttribute("NPCBehavior") ~= nil or model:GetAttribute("NPCDisplayName") ~= nil then
+        return true
+    end
+    if model:GetAttribute("InCombat") == true or modelMatch ~= nil or (myGroup ~= nil and modelGroup == myGroup) then
+        return true
+    end
+    return false
+end
+
+local function FindBossTarget(chosenBoss)
+    local myRoot = GetMyRoot()
+    if not myRoot then return nil end
+    local char = LocalPlayer.Character
+
+    -- 1. ตรวจสอบคู่ต่อสู้ในแมตช์/สนามประลอง
     local candidates = {}
-    for _, obj in ipairs(workspace:GetChildren()) do
-        if obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
+    local seen = {}
+    local function evaluateModel(obj)
+        if obj and not seen[obj] and obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
+            seen[obj] = true
             local hum = obj:FindFirstChildOfClass("Humanoid")
             local root = obj:FindFirstChild("HumanoidRootPart")
-            if hum and root and IsBossAlive(obj) then
+            if hum and root and IsCombatOpponent(obj) then
                 local plr = Players:GetPlayerFromCharacter(obj)
-                if not plr then
+                if not plr or plr ~= LocalPlayer then
                     table.insert(candidates, obj)
                 end
             end
         end
     end
 
-    if #candidates == 0 then
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
-                local hum = obj:FindFirstChildOfClass("Humanoid")
-                local root = obj:FindFirstChild("HumanoidRootPart")
-                if hum and root and IsBossAlive(obj) and (root.Position - myRoot.Position).Magnitude < 180 then
-                    local plr = Players:GetPlayerFromCharacter(obj)
-                    if not plr then
-                        table.insert(candidates, obj)
-                    end
-                end
-            end
+    for _, obj in ipairs(workspace:GetChildren()) do
+        evaluateModel(obj)
+    end
+
+    local matchDir = workspace:FindFirstChild("MatchDirectory")
+    if matchDir then
+        for _, obj in ipairs(matchDir:GetDescendants()) do
+            evaluateModel(obj)
         end
     end
 
-    -- [PvP Fallback]: ถ้าอยู่ในสนามประลองและไม่มีบอส NPC ให้เล็งคู่ต่อสู้ที่ล็อคเป้าหรือกำลังสู้ด้วย
+    local arenas = workspace:FindFirstChild("Arenas")
+    if arenas then
+        for _, obj in ipairs(arenas:GetDescendants()) do
+            evaluateModel(obj)
+        end
+    end
+
+    -- 2. Fallback จาก TargetLockController
     if #candidates == 0 then
         pcall(function()
             local tlc = GameManager:GetController("TargetLockController")
@@ -238,30 +394,23 @@ local function FindBossTarget(chosenBoss)
                 table.insert(candidates, tlc.Target.Parent)
             end
         end)
-        if #candidates == 0 and char:GetAttribute("InCombat") == true then
-            for _, obj in ipairs(workspace:GetChildren()) do
-                if obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
-                    local root = obj:FindFirstChild("HumanoidRootPart")
-                    if root and IsBossAlive(obj) and obj:GetAttribute("InCombat") == true then
-                        table.insert(candidates, obj)
-                    end
-                end
-            end
-        end
     end
 
     if #candidates == 0 then return nil end
 
-    if chosenBoss and chosenBoss ~= "Auto (Any)" then
+    -- ถ้าตรงกับบอสที่เลือก ให้เลือกตัวนั้นก่อน
+    if chosenBoss and chosenBoss ~= "Auto (Any)" and chosenBoss ~= "Any" then
         local cLower = string.lower(chosenBoss)
         for _, m in ipairs(candidates) do
             local nLower = string.lower(m.Name)
-            if string.find(nLower, cLower) or (chosenBoss == "Nephra & Ammut" and (string.find(nLower, "nephra") or string.find(nLower, "ammut"))) then
+            local kitLower = string.lower(tostring(m:GetAttribute("MiniBossKit") or ""))
+            if string.find(nLower, cLower) or string.find(kitLower, cLower) or (chosenBoss == "Nephra & Ammut" and (string.find(nLower, "nephra") or string.find(nLower, "ammut"))) then
                 return m
             end
         end
     end
 
+    -- เลือกตัวที่ใกล้ตัวละครจริง (Player_Client) ที่สุด
     table.sort(candidates, function(a, b)
         local ra = a:FindFirstChild("HumanoidRootPart")
         local rb = b:FindFirstChild("HumanoidRootPart")
@@ -273,25 +422,27 @@ local function FindBossTarget(chosenBoss)
     return candidates[1]
 end
 
--- ค้นหาศัตรูเป้าหมาย (รองรับทั้งบอสและผู้เล่นใน PVP เพื่อให้อันติเข้าเป้า 100%)
+-- ค้นหาศัตรูเป้าหมาย (รองรับทั้งบอสและผู้เล่นใน PVP เพื่อให้อันติและฮิตบ็อกซ์เข้าเป้า 100%)
 local function FindAnyTarget()
     if getgenv().fAstConfig then
         local b = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
         if b and IsBossAlive(b) then return b end
     end
 
+    local tlcTarget = nil
     pcall(function()
         local tlc = GameManager:GetController("TargetLockController")
-        if tlc and tlc.Target and IsBossAlive(tlc.Target.Parent) then
-            return tlc.Target.Parent
+        if tlc and tlc.Target and tlc.Target.Parent and IsBossAlive(tlc.Target.Parent) then
+            tlcTarget = tlc.Target.Parent
         end
     end)
+    if tlcTarget then return tlcTarget end
 
-    local char = LocalPlayer.Character
-    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    local myRoot = GetMyRoot()
     if not myRoot then return nil end
+    local char = LocalPlayer.Character
 
-    local closest, closestDist = nil, 65
+    local closest, closestDist = nil, 85
     for _, m in ipairs(workspace:GetChildren()) do
         if m:IsA("Model") and m ~= char and m.Name ~= "Player_Client" then
             local r = m:FindFirstChild("HumanoidRootPart")
@@ -309,50 +460,42 @@ local function FindAnyTarget()
 end
 
 -- // 5.1 SILENT AIM / 100% HIT REGISTRATION HOOK (ตีและอันติโดนทุกครั้ง 100%) // --
--- เมื่อเซิร์ฟเวอร์ขอเช็คตำแหน่ง Hitbox การฟันหรืออันติ (RequestHitboxOnImpact)
--- เราจะส่งพิกัด CFrame ที่คำนวณหักล้าง Offset -3.0 studs ของตัวเกม ทำให้จุดกึ่งกลาง Hitbox ตกใส่ตัวศัตรู 100%
 local RequestHitboxOnImpact = ReplicatedStorage.Remotes.PlayerCharacter.Request:WaitForChild("RequestHitboxOnImpact")
 
 local function GetPerfectStrikeCFrame(origCF)
+    if typeof(origCF) ~= "CFrame" then return origCF end
     local target = FindAnyTarget()
     if target then
         local bRoot = target:FindFirstChild("HumanoidRootPart")
         if bRoot then
-            local toB = (bRoot.Position - origCF.Position)
-            local flatToB = Vector3.new(toB.X, 0, toB.Z)
-            local flatUnit = flatToB.Magnitude > 0.1 and flatToB.Unit or origCF.LookVector
-            -- ส่งพิกัดด้านหน้าเป้าหมาย 3.0 studs ที่ระดับบอสพอดี ทำให้กล่อง Hitbox (Offset -3.0 ถึง -3.5 studs) ครอบศัตรู 100%
-            local strikePos = Vector3.new(bRoot.Position.X - flatUnit.X * 3.0, bRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 3.0)
-            return CFrame.lookAt(strikePos, bRoot.Position)
+            local myPos = origCF.Position
+            local bPos = bRoot.Position
+            local flatToB = Vector3.new(bPos.X - myPos.X, 0, bPos.Z - myPos.Z)
+            local dist = flatToB.Magnitude
+            local flatUnit = dist > 0.05 and flatToB.Unit or origCF.LookVector
+            -- เลื่อนพิกัดในระยะที่เซิร์ฟเวอร์ยอมรับ และหันหน้าเข้าหาจุดกึ่งกลางบอส 100%
+            local shift = math.clamp(dist - 2.3, -1.2, 2.2)
+            local strikePos = myPos + flatUnit * shift
+            return CFrame.lookAt(strikePos, Vector3.new(bPos.X, strikePos.Y, bPos.Z))
         end
     end
     return origCF
 end
 
-if not getgenv()._HitboxFuncHooked and type(hookfunction) == "function" then
-    getgenv()._HitboxFuncHooked = true
-    local oldHitboxFire
-    pcall(function()
+pcall(function()
+    if restorefunction and isfunctionhooked and isfunctionhooked(RequestHitboxOnImpact.FireServer) then
+        restorefunction(RequestHitboxOnImpact.FireServer)
+    end
+    if type(hookfunction) == "function" then
+        local oldHitboxFire
         oldHitboxFire = hookfunction(RequestHitboxOnImpact.FireServer, function(self, cf, t, id)
-            cf = GetPerfectStrikeCFrame(cf)
+            if self == RequestHitboxOnImpact then
+                cf = GetPerfectStrikeCFrame(cf)
+            end
             return oldHitboxFire(self, cf, t, id)
         end)
-    end)
-end
-
-if not getgenv()._HitboxNamecallHooked and type(hookmetamethod) == "function" then
-    getgenv()._HitboxNamecallHooked = true
-    local rawNamecall
-    rawNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        local method = getnamecallmethod()
-        if self == RequestHitboxOnImpact and (method == "FireServer" or method == "fireServer") then
-            local args = {...}
-            args[1] = GetPerfectStrikeCFrame(args[1])
-            return rawNamecall(self, table.unpack(args))
-        end
-        return rawNamecall(self, ...)
-    end)
-end
+    end
+end)
 
 -- เช็คสกิลอันติของคู่ต่อสู้ใน PVP
 local function IsUltimateAttack(impactData)
@@ -383,7 +526,7 @@ local function ApplyCleanHook(char)
     task.spawn(function()
         local handler = nil
         for _ = 1, 60 do
-            handler = CharacterController:GetCharacterHandler(char)
+            handler = (char and CharacterController:GetCharacterHandler(char)) or CharacterController:GetLocalCharacterHandler()
             if handler and handler.ActionManager then break end
             task.wait(0.1)
         end
@@ -391,7 +534,7 @@ local function ApplyCleanHook(char)
 
         local am = handler.ActionManager
 
-        -- [Ultimate 100% Snap Hook]: เมื่อใช้อันติไม่ว่าจะกดเองหรือระบบออโต้ จะพุ่งประกบหน้าเป้าหมายทันที
+        -- [Ultimate 100% Snap Hook]: เมื่อใช้อันติไม่ว่าจะกดเองหรือระบบออโต้ จะพุ่งประกบหน้าเป้าหมายทันทีบน Player_Client
         local origTryQueue = am.TryQueueBasicAttack
         if origTryQueue and not am._fAstUltHooked then
             am._fAstUltHooked = true
@@ -400,14 +543,17 @@ local function ApplyCleanHook(char)
                     local target = FindAnyTarget()
                     if target then
                         local bRoot = target:FindFirstChild("HumanoidRootPart")
-                        local myChar = LocalPlayer.Character
-                        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+                        local myRoot = handler.Root or GetMyRoot()
                         if bRoot and myRoot then
                             local toB = (bRoot.Position - myRoot.Position)
                             local flat = Vector3.new(toB.X, 0, toB.Z)
-                            local unit = flat.Magnitude > 0.1 and flat.Unit or myRoot.CFrame.LookVector
-                            -- วาร์ปประกบหน้าศัตรู 2.2 studs ที่ระดับความสูงเป้าหมายพอดี
-                            myRoot.CFrame = CFrame.lookAt(Vector3.new(bRoot.Position.X - unit.X * 2.2, bRoot.Position.Y, bRoot.Position.Z - unit.Z * 2.2), bRoot.Position)
+                            local unit = flat.Magnitude > 0.05 and flat.Unit or myRoot.CFrame.LookVector
+                            local snapCF = CFrame.lookAt(Vector3.new(bRoot.Position.X - unit.X * 2.0, bRoot.Position.Y, bRoot.Position.Z - unit.Z * 2.0), bRoot.Position)
+                            if handler.PhysicsComponent and handler.PhysicsComponent.IsPhysicsSimulated then
+                                myRoot.CFrame = snapCF
+                                PlayerCharacter.Request.UpdateCharacterCFrame:FireServer(snapCF)
+                            end
+                            PlayerCharacter.Request.SetDesiredLookDirection:FireServer(unit, 999)
                             isPerformingUltimate = true
                             ultCastTime = tick()
                         end
@@ -421,7 +567,7 @@ local function ApplyCleanHook(char)
             local isFromBoss = false
             if impactData.attackerCharacter then
                 local plr = Players:GetPlayerFromCharacter(impactData.attackerCharacter)
-                if not plr then isFromBoss = true end
+                if not plr or plr ~= LocalPlayer then isFromBoss = true end
             end
 
             -- ถ้าโดนโจมตีจากบอสและเปิด AutoBoss -> Parry 100%
@@ -453,79 +599,106 @@ local function ApplyCleanHook(char)
     end)
 end
 
-if LocalPlayer.Character then ApplyCleanHook(LocalPlayer.Character) end
-LocalPlayer.CharacterAdded:Connect(ApplyCleanHook)
-
 -- // 7. AUTO RETURN TO LOBBY // --
 local isReturningLobby = false
 
+if LocalPlayer.Character then ApplyCleanHook(LocalPlayer.Character) end
+if getgenv()._fAstCharAddedConn then pcall(function() getgenv()._fAstCharAddedConn:Disconnect() end) end
+getgenv()._fAstCharAddedConn = LocalPlayer.CharacterAdded:Connect(function(c)
+    isReturningLobby = false
+    ApplyCleanHook(c)
+end)
+
+local function LeaveFinishedArenaOnce()
+    -- 1. ยิง Remote ออกจากสนามมินิบอส (MiniBossFight.Request_Leave)
+    pcall(function()
+        local mb = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("MiniBossFight")
+        if mb and mb:FindFirstChild("Request_Leave") then
+            mb.Request_Leave:FireServer()
+        end
+    end)
+
+    -- 2. กดปุ่ม ReturnButton บน MiniBossResultsGui
+    pcall(function()
+        local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+        local rGui = pgui and pgui:FindFirstChild("MiniBossResultsGui")
+        if rGui and rGui.Enabled then
+            local btn = rGui.Screen.Stage:FindFirstChild("ReturnButton")
+            if btn and getconnections then
+                for _, c in ipairs(getconnections(btn.Activated)) do
+                    c:Fire()
+                end
+            end
+        end
+    end)
+
+    -- 3. ยิง Match RequestReturnToLobby สำรองกรณีเป็นสนามปกติ
+    pcall(function()
+        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+        if remotes and remotes:FindFirstChild("Match") and remotes.Match:FindFirstChild("RequestReturnToLobby") then
+            remotes.Match.RequestReturnToLobby:FireServer()
+        end
+    end)
+end
+
 local function TriggerAutoReturnToLobby(reason)
-    if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoReturnLobby then return end
+    if not getgenv().fAstConfig or (not getgenv().fAstConfig.AutoReturnLobby and not getgenv().fAstConfig.AutoBoss) then return end
     if isReturningLobby then return end
     isReturningLobby = true
 
     task.spawn(function()
-        ShowHUDToast("🏆 บอสตายแล้ว! กำลังกลับล็อบบี้อัตโนมัติ...", Color3.fromRGB(50, 255, 150))
-        -- รอ 1.5 วินาที เพื่อให้เซิร์ฟเวอร์สรุปผลและบันทึกของรางวัล (Souls, Gems, Relic Keys)
-        task.wait(1.5)
+        ShowHUDToast("🏆 บอสตายแล้ว! กำลังเตรียมรอบถัดไป...", Color3.fromRGB(50, 255, 150))
+        task.wait(1.2)
 
-        for attempt = 1, 8 do
-            -- 1. ยิง Remote ออกจากสนามมินิบอส (MiniBossFight.Request_Leave)
+        -- หากเปิด AutoBoss และไม่ได้เปิด AutoReturnLobby: ลองยิง Retry สู้ต่อได้ทันที
+        if getgenv().fAstConfig.AutoBoss and not getgenv().fAstConfig.AutoReturnLobby then
             pcall(function()
                 local mb = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("MiniBossFight")
-                if mb and mb:FindFirstChild("Request_Leave") then
-                    mb.Request_Leave:FireServer()
+                if mb and mb:FindFirstChild("Request_Retry") then
+                    mb.Request_Retry:FireServer()
                 end
             end)
+            task.wait(1.5)
+            local char = LocalPlayer.Character
+            if char and char:GetAttribute("InCombat") == true and FindBossTarget("Auto (Any)") ~= nil then
+                isReturningLobby = false
+                return
+            end
+        end
 
-            -- 2. กดปุ่ม ReturnButton บน MiniBossResultsGui
-            pcall(function()
-                local pgui = LocalPlayer:FindFirstChild("PlayerGui")
-                local rGui = pgui and pgui:FindFirstChild("MiniBossResultsGui")
-                if rGui and rGui.Enabled then
-                    local btn = rGui.Screen.Stage:FindFirstChild("ReturnButton")
-                    if btn and getconnections then
-                        for _, c in ipairs(getconnections(btn.Activated)) do
-                            c:Fire()
-                        end
-                    end
-                end
-            end)
+        for attempt = 1, 8 do
+            local char = LocalPlayer.Character
+            if attempt > 2 and (not char or char:GetAttribute("InSafeZone") == true or not FindBossTarget("Auto (Any)")) then
+                break
+            end
 
-            -- 3. ยิง Match RequestReturnToLobby สำรองกรณีเป็นสนามปกติ
-            pcall(function()
-                local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-                if remotes and remotes:FindFirstChild("Match") and remotes.Match:FindFirstChild("RequestReturnToLobby") then
-                    remotes.Match.RequestReturnToLobby:FireServer()
-                end
-            end)
-
+            LeaveFinishedArenaOnce()
             task.wait(0.8)
         end
+
+        isReturningLobby = false
     end)
 end
 
 -- ดักจับสัญญาณบอสแพ้จากเซิร์ฟเวอร์โดยตรง
 pcall(function()
+    if getgenv()._fAstBannerConn then pcall(function() getgenv()._fAstBannerConn:Disconnect() end) end
+    if getgenv()._fAstResultConn then pcall(function() getgenv()._fAstResultConn:Disconnect() end) end
     local mb = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("MiniBossFight")
     if mb then
         if mb:FindFirstChild("Banner") then
-            mb.Banner.OnClientEvent:Connect(function(matchId, bannerType)
+            getgenv()._fAstBannerConn = mb.Banner.OnClientEvent:Connect(function(matchId, bannerType)
                 if bannerType == "Victory" then
                     TriggerAutoReturnToLobby("BannerVictory")
                 end
             end)
         end
         if mb:FindFirstChild("Result") then
-            mb.Result.OnClientEvent:Connect(function()
+            getgenv()._fAstResultConn = mb.Result.OnClientEvent:Connect(function()
                 TriggerAutoReturnToLobby("MiniBossResult")
             end)
         end
     end
-end)
-
-LocalPlayer.CharacterAdded:Connect(function()
-    isReturningLobby = false
 end)
 
 -- // 7.6 AUTO CLAIM REWARDS ENGINE // --
@@ -571,8 +744,9 @@ end
 
 -- ลูปตรวจสอบเคลมรางวัลอัตโนมัติเบื้องหลัง
 task.spawn(function()
-    while true do
+    while getgenv()._fAstRunToken == myRunToken do
         task.wait(12)
+        if getgenv()._fAstRunToken ~= myRunToken then break end
         if getgenv().fAstConfig and getgenv().fAstConfig.AutoClaimRewards then
             ClaimAllRewards(true)
         end
@@ -581,6 +755,8 @@ end)
 
 -- // 8. AUTO BOSS SMART COMBAT ENGINE (ตีตรงจังหวะ ไม่ตีมั่ว หันหาบอสเฉพาะตอนสู้) // --
 local lastAttackTime = 0
+local lastEquipTime = 0
+local snappedFrames = 0
 local hadBossFighting = false
 
 -- [ฟังก์ชันช่วยปลดล็อคมุมกล้องเมื่ออยู่นอกการต่อสู้หรือปิดบอท]
@@ -590,53 +766,109 @@ local function ReleaseCameraLock()
         if tlc then
             tlc:SetForcedTargetLock(nil)
             tlc:SetTarget(nil)
+            tlc.CriticalStrikeTarget = nil
         end
     end)
     pcall(function()
-        local char = LocalPlayer.Character
-        if char then
-            local handler = CharacterController:GetCharacterHandler(char)
-            if handler then
-                handler.TargetLock = nil
-                handler.OverrideLookDirection = nil
-                handler.DesiredLookDirection = nil
-                handler._desiredQueuedAction = nil
+        if PlayerInputController and PlayerInputController.CurrentInput then
+            PlayerInputController.CurrentInput.MoveDirection = Vector3.new(0, 0, 0)
+        end
+        local handler = CharacterController:GetLocalCharacterHandler()
+        if handler then
+            handler.TargetLock = nil
+            handler.OverrideLookDirection = nil
+            handler.DesiredLookDirection = nil
+            handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
+            handler._desiredQueuedAction = nil
+            if handler.ActionManager then
+                handler.ActionManager._queuedActionType = nil
             end
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            local cam = workspace.CurrentCamera
-            if cam and hum and cam.CameraSubject ~= hum then
+            if handler.PhysicsComponent and handler.PhysicsComponent.RootCollider then
+                handler.PhysicsComponent.RootCollider.CanCollide = true
+            end
+        end
+        local cam = workspace.CurrentCamera
+        local hum = GetActualPlayerHumanoid()
+        if cam then
+            if hum and (cam.CameraSubject ~= hum or not cam.CameraSubject.Parent or not cam.CameraSubject:IsDescendantOf(workspace)) then
                 cam.CameraSubject = hum
             end
+            cam.CameraType = Enum.CameraType.Custom
+            pcall(function()
+                local playerModule = LocalPlayer:FindFirstChild("PlayerScripts") and LocalPlayer.PlayerScripts:FindFirstChild("PlayerModule")
+                if playerModule then
+                    local cameras = require(playerModule).cameras
+                    if cameras and cameras.activeCameraController then
+                        cameras.activeCameraController.resetCameraAngle = true
+                    end
+                end
+            end)
         end
     end)
 end
+
+-- Watchdog ป้องกันมุมกล้องหลุดส่องพื้นหรือค้างในช่องว่างเมื่อสลับแผนที่/ปิดบอท
+if getgenv()._fAstCamWatchdog then pcall(function() getgenv()._fAstCamWatchdog:Disconnect() end) end
+getgenv()._fAstCamWatchdog = RunService.RenderStepped:Connect(function()
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local cs = cam.CameraSubject
+    if not cs or not cs.Parent or not cs:IsDescendantOf(workspace) then
+        local hum = GetActualPlayerHumanoid()
+        if hum then
+            cam.CameraSubject = hum
+            cam.CameraType = Enum.CameraType.Custom
+        end
+    end
+end)
 
 getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoBoss then
         if hadBossFighting then
             hadBossFighting = false
+            snappedFrames = 0
+            local handler = CharacterController:GetLocalCharacterHandler()
+            if handler and handler.ActionManager then
+                handler.ActionManager._queuedActionType = nil
+                handler._desiredQueuedAction = nil
+            end
             ReleaseCameraLock()
         end
         return
     end
 
-    local char = LocalPlayer.Character
-    if not char then return end
-    local myRoot = char:FindFirstChild("HumanoidRootPart")
-    local myHum = char:FindFirstChildOfClass("Humanoid")
-    if not myRoot or not myHum or myHum.Health <= 0 then return end
-
-    local handler = CharacterController:GetCharacterHandler(char)
+    local handler = CharacterController:GetLocalCharacterHandler()
     if not handler or not handler.ActionManager then return end
+    local myRoot = handler.Root or GetMyRoot()
+    local myHum = handler.Humanoid
+    if not myRoot or not myHum or myHum.Health <= 0 then return end
     local am = handler.ActionManager
+
+    -- ตรวจสอบว่าได้ Hook ระบบตีแม่นยำแล้วหรือยัง
+    if not am._fAstUltHooked then
+        ApplyCleanHook()
+    end
+
+    -- สวมใส่อาวุธอัตโนมัติหากยังไม่ได้ถือ (เซิร์ฟเวอร์รับค่า boolean true)
+    if not handler.EquippedWeapon and (tick() - lastEquipTime > 1.5) then
+        lastEquipTime = tick()
+        pcall(function()
+            PlayerCharacter.Request.SetEquippedWeapon:FireServer(true)
+        end)
+    end
 
     local targetBoss = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
 
-    -- [ตรวจสอบสถานะการต่อสู้]: บอสต้องยังมีชีวิตอยู่จริง
+    -- [ตรวจสอบสถานะการต่อสู้]: บอสต้องยังมีชีวิตอยู่จริง (หยุดตีและปลดกล้องทันที 100%)
     if not targetBoss or not IsBossAlive(targetBoss) then
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
+            snappedFrames = 0
+            handler._desiredQueuedAction = nil
+            if am then
+                am._queuedActionType = nil
+            end
             ReleaseCameraLock()
             ShowHUDToast("🏆 บอสตายแล้ว! หยุดโจมตีอัตโนมัติ", Color3.fromRGB(50, 255, 120))
             if TriggerAutoReturnToLobby then
@@ -651,25 +883,43 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
+            snappedFrames = 0
+            handler._desiredQueuedAction = nil
+            if am then
+                am._queuedActionType = nil
+            end
             ReleaseCameraLock()
         end
         return
     end
 
-    local toBoss = (bRoot.Position - myRoot.Position)
+    local bPos = bRoot.Position
+    local toBoss = (bPos - myRoot.Position)
     local dist = toBoss.Magnitude
 
-    -- ตรวจสอบระยะต่อสู้ (ถ้าอยู่ในห้องสู้บอส ระยะไม่เกิน 85 studs)
-    if dist > 85 then
+    -- ตรวจสอบระยะต่อสู้ (ครอบคลุมทั้งสนามประลอง ไม่เกิน 400 studs)
+    if dist > 400 then
         if hadBossFighting then
             hadBossFighting = false
             isPerformingUltimate = false
+            snappedFrames = 0
             ReleaseCameraLock()
         end
         return
     end
 
     hadBossFighting = true
+
+    -- ปิด CanCollide ของ RootCollider และ RemoteCollider ของบอสชั่วคราวเพื่อไม่ให้ฟิสิกส์ดีดตัวเราออกห่างจากบอสเกินระยะโจมตี
+    pcall(function()
+        if handler.PhysicsComponent and handler.PhysicsComponent.RootCollider then
+            handler.PhysicsComponent.RootCollider.CanCollide = false
+        end
+        local bHandler = CharacterController:GetCharacterHandler(targetBoss)
+        if bHandler and bHandler.RemoteCollider then
+            bHandler.RemoteCollider.CanCollide = false
+        end
+    end)
 
     -- [ตรวจจับสถานะอันติ]: ดูว่าอยู่ในจังหวะร่ายหรือท่าอนิเมชันอันติหรือไม่
     local currentAct = am.CurrentAction
@@ -679,78 +929,138 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         isPerformingUltimate = false
     end
 
-    -- [A] ล็อคเป้าตัวละคร + หันมุมกล้อง (Camera) เข้าหาบอสอัตโนมัติ
-    local flatToBoss = Vector3.new(toBoss.X, 0, toBoss.Z)
-    local flatUnit = flatToBoss.Magnitude > 0.1 and flatToBoss.Unit or myRoot.CFrame.LookVector
-    local lookTarget = Vector3.new(bRoot.Position.X, bRoot.Position.Y, bRoot.Position.Z)
-
-    handler.TargetLock = bRoot
-    handler.OverrideLookDirection = flatUnit
-    handler.DesiredLookDirection = flatUnit
-    handler.DesiredLookResponsiveness = 999
-
-    if handler.PhysicsComponent and handler.PhysicsComponent.AlignOrientation then
-        handler.PhysicsComponent.AlignOrientation.CFrame = CFrame.lookAt(myRoot.Position, lookTarget)
+    -- [A] ล็อคเป้าตัวละคร + ซิงค์ TargetLock ไปยังเซิร์ฟเวอร์เพื่อให้การพุ่งโจมตีหันเข้าหาบอสเสมอ
+    local bLook = bRoot.CFrame.LookVector
+    local flatLook = Vector3.new(bLook.X, 0, bLook.Z)
+    if flatLook.Magnitude > 0.05 then
+        flatLook = flatLook.Unit
+    else
+        flatLook = Vector3.new(0, 0, -1)
     end
 
-    -- หันมุมกล้องผ่านระบบ TargetLockController ของเกม (นุ่มนวลและไม่ขัดขืนการขยับเมาส์ของผู้เล่น)
+    -- ตำแหน่งยืน 2.0 studs หน้าบอสและหันเข้าหาบอส
+    local standPos = bPos + flatLook * 2.0
+    local lookAtPos = Vector3.new(bPos.X, standPos.Y, bPos.Z)
+    local targetCF = CFrame.lookAt(standPos, lookAtPos)
+
+    local flatToBoss = Vector3.new(bPos.X - myRoot.Position.X, 0, bPos.Z - myRoot.Position.Z)
+    local unit = flatToBoss.Magnitude > 0.01 and flatToBoss.Unit or -flatLook
+
+    handler.TargetLock = bRoot
+    handler.OverrideLookDirection = unit
+    handler.DesiredLookDirection = unit
+    handler.DesiredLookResponsiveness = 999
+
     pcall(function()
         local tlc = GameManager:GetController("TargetLockController")
-        if tlc and tlc.ForcedTargetLock ~= bRoot then
-            tlc:SetForcedTargetLock(bRoot)
+        if tlc then
+            if tlc.ForcedTargetLock ~= bRoot then
+                tlc:SetForcedTargetLock(bRoot)
+            end
+            if tlc.Target ~= bRoot then
+                tlc:SetTarget(bRoot)
+            end
         end
     end)
 
-    -- ระยะเป้าหมายระดับประชิด: 2.5 studs เพื่อให้ฟันโดน 100% ทุกอาวุธ (ไม่ฟันลม)
-    local targetDist = (isPerformingUltimate or isUltActionActive) and 2.2 or 2.5
-    local approachPos = Vector3.new(
-        bRoot.Position.X - flatUnit.X * targetDist,
-        bRoot.Position.Y,
-        bRoot.Position.Z - flatUnit.Z * targetDist
-    )
-
-    if isPerformingUltimate or isUltActionActive then
-        -- ล็อคตัวละครเกาะติดหน้าบอสแบบ Magnetic Lock ตลอดการร่ายอันติ แม้บอสจะกระโดดหรือถอยหลัง
-        myRoot.CFrame = CFrame.lookAt(approachPos, bRoot.Position)
-        handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
+    -- [B] ระบบซิงค์ฟิสิกส์ Client-Server (แก้ปัญหาตัวละครฟันลมอยู่กับที่)
+    local isSim = handler.PhysicsComponent and handler.PhysicsComponent.IsPhysicsSimulated
+    if isSim then
+        myRoot.CFrame = targetCF
+        myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        handler._serverRootCFrame = targetCF
+        handler._interpolationResultCFrame = targetCF
+        handler._bulkMoveCFrame = targetCF
+        snappedFrames = snappedFrames + 1
+        pcall(function()
+            PlayerCharacter.Request.UpdateCharacterCFrame:FireServer(targetCF)
+            PlayerCharacter.Request.SetDesiredLookDirection:FireServer(unit, 999)
+        end)
     else
-        if dist > 3.0 then
-            handler.DesiredMoveDirection = flatUnit
-            myRoot.CFrame = myRoot.CFrame:Lerp(CFrame.lookAt(approachPos, bRoot.Position), 0.5)
-        else
-            handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
-            myRoot.CFrame = myRoot.CFrame:Lerp(CFrame.lookAt(approachPos, bRoot.Position), 0.35)
+        snappedFrames = 0
+        if dist <= 8.5 then
+            myRoot.CFrame = targetCF
+            myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            handler._serverRootCFrame = targetCF
+            handler._interpolationResultCFrame = targetCF
+            handler._bulkMoveCFrame = targetCF
+            pcall(function()
+                PlayerCharacter.Request.UpdateCharacterCFrame:FireServer(targetCF)
+                PlayerCharacter.Request.SetDesiredLookDirection:FireServer(unit, 999)
+            end)
         end
     end
 
-    -- [B] ระบบโจมตีอัตโนมัติคอมโบต่อเนื่อง & อันติแม่นยำ 100%
-    if dist <= 7.5 and IsBossAlive(targetBoss) then
-        -- 1. แทงปิดฉากเมื่อบอสการ์ดแตก (Critical Strike)
-        local critTarget = CharacterController.CriticalStrikeTarget
-        if critTarget then
-            ReplicatedStorage.Remotes.PlayerCharacter.Request.CriticalStrike:FireServer(critTarget.Parent)
-        elseif isPerformingUltimate or isUltActionActive then
-            -- กำลังออกท่าอันติ: งดแทรก Light Attack หรือคลิกเมาส์ เพื่อให้อันติฟันเข้าเป้าครบ 100% ไม่หลุดคอมโบ
+    if handler.PhysicsComponent and handler.PhysicsComponent.AlignOrientation then
+        handler.PhysicsComponent.AlignOrientation.CFrame = CFrame.lookAt(myRoot.Position, Vector3.new(bPos.X, myRoot.Position.Y, bPos.Z))
+    end
+
+    -- อัปเดต MoveDirection ใน PlayerInputController เพื่อไม่ให้ StepState ล้างค่าการเดินเข้าหาบอส
+    local moveDir = (dist > 2.2) and unit or Vector3.new(0, 0, 0)
+    handler.DesiredMoveDirection = moveDir
+    if PlayerInputController and PlayerInputController.CurrentInput then
+        PlayerInputController.CurrentInput.MoveDirection = moveDir
+    end
+
+    -- [C] ระบบโจมตีอัตโนมัติแม่นยำ 100% (ตีทันทีเมื่ออยู่ในระยะ <= 8.5 studs หรือซิงค์ตำแหน่งแล้ว)
+    local readyToStrike = (dist <= 8.5) or (isSim and snappedFrames >= 1)
+
+    if not IsBossAlive(targetBoss) then
+        if hadBossFighting then
+            hadBossFighting = false
+            isPerformingUltimate = false
+            snappedFrames = 0
+            handler._desiredQueuedAction = nil
+            if am then
+                am._queuedActionType = nil
+            end
+            ReleaseCameraLock()
+        end
+        return
+    end
+
+    -- 1. แทงปิดฉากเมื่อบอสการ์ดแตก (Critical Strike Finisher)
+    local tlc = nil
+    pcall(function() tlc = GameManager:GetController("TargetLockController") end)
+    local critTarget = (tlc and tlc.CriticalStrikeTarget) or CharacterController.CriticalStrikeTarget
+    local isOpenCrit = (bRoot:GetAttribute("OpenForCritical") == true) or ((targetBoss:GetAttribute("Posture") or 100) <= 0)
+
+    if ((critTarget and critTarget.Parent and IsBossAlive(critTarget.Parent)) or isOpenCrit) and IsBossAlive(targetBoss) then
+        pcall(function()
+            PlayerCharacter.Request.CriticalStrike:FireServer(targetBoss)
+        end)
+    end
+
+    if isPerformingUltimate or isUltActionActive then
+        -- กำลังออกท่าอันติ: รอจนกว่าจะจบอนิเมชัน
+    elseif readyToStrike and IsBossAlive(targetBoss) then
+        -- 2. ปล่อย Ultimate ทันทีที่เกจเต็ม (100% Energy)
+        if handler:CanPerformUltimate() then
+            isPerformingUltimate = true
+            ultCastTime = tick()
+
+            myRoot.CFrame = targetCF
+            handler._desiredQueuedAction = "Ultimate"
+            am:TryQueueBasicAttack("Ultimate")
+            ShowHUDToast("🔥 ใช้อันติล็อกเป้าบอส (Ultimate)!", Color3.fromRGB(255, 60, 60))
         else
-            -- 2. ปล่อย Ultimate ทันทีที่เกจเต็ม (100% Energy)
-            if handler:CanPerformUltimate() then
-                isPerformingUltimate = true
-                ultCastTime = tick()
-
-                -- วาร์ปประกบหน้าบอสระดับ 2.2 studs ในเสี้ยววินาทีก่อนปล่อยอันติ
-                myRoot.CFrame = CFrame.lookAt(Vector3.new(bRoot.Position.X - flatUnit.X * 2.2, bRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 2.2), bRoot.Position)
-
-                handler._desiredQueuedAction = "Ultimate"
-                am:TryQueueBasicAttack("Ultimate")
-                ShowHUDToast("🔥 ใช้อันติล็อกเป้าบอส (Ultimate)!", Color3.fromRGB(255, 60, 60))
+            -- 3. ตีต่อเนื่องไม่ขาดตอน (Combo Relentless Attack)
+            local canQueue = false
+            if not currentAct then
+                canQueue = true
             else
-                -- 3. รันคอมโบ Light Attack ตลอดเวลาที่ Action ว่าง
-                if not am._queuedActionType then
-                    handler._desiredQueuedAction = "LightAttack"
-                    am:TryQueueBasicAttack("Light")
-                end
+                canQueue = currentAct.CanQueueActions or currentAct.CanQueueBasicAttacks or currentAct.CanCancel
+            end
+
+            if canQueue and not am._queuedActionType and IsBossAlive(targetBoss) then
+                handler._desiredQueuedAction = "LightAttack"
+                am:TryQueueBasicAttack("Light")
             end
         end
+    else
+        -- บอสฉีกหนีเกินระยะ 8.5 studs หรือบอสตาย: ล้างคิวโจมตีค้างทันที
+        handler._desiredQueuedAction = nil
+        am._queuedActionType = nil
     end
 end)
 
@@ -773,7 +1083,7 @@ ScreenGui.Parent = guiParent
 
 local Main = Instance.new("Frame")
 Main.Name = "MainFrame"
-Main.Size = UDim2.new(0, 338, 0, 400)
+Main.Size = UDim2.new(0, 338, 0, 392)
 Main.Position = UDim2.new(0.04, 0, 0.15, 0)
 Main.BackgroundColor3 = Color3.fromRGB(15, 13, 24)
 Main.BorderSizePixel = 0
@@ -829,7 +1139,7 @@ TopLine.Parent = TopBar
 
 local Title = Instance.new("TextLabel")
 Title.Name = "Title"
-Title.Size = UDim2.new(0, 95, 1, 0)
+Title.Size = UDim2.new(0, 85, 1, 0)
 Title.Position = UDim2.new(0, 14, 0, 0)
 Title.BackgroundTransparency = 1
 Title.Font = Enum.Font.GothamBold
@@ -839,31 +1149,10 @@ Title.TextSize = 16
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = TopBar
 
-local TagBadge = Instance.new("Frame")
-TagBadge.Name = "TagBadge"
-TagBadge.Size = UDim2.new(0, 42, 0, 18)
-TagBadge.Position = UDim2.new(0, 98, 0.5, -9)
-TagBadge.BackgroundColor3 = Color3.fromRGB(80, 35, 145)
-TagBadge.BorderSizePixel = 0
-TagBadge.Parent = TopBar
-
-local TagCorner = Instance.new("UICorner")
-TagCorner.CornerRadius = UDim.new(0, 5)
-TagCorner.Parent = TagBadge
-
-local TagText = Instance.new("TextLabel")
-TagText.Size = UDim2.new(1, 0, 1, 0)
-TagText.BackgroundTransparency = 1
-TagText.Font = Enum.Font.GothamBold
-TagText.Text = "PRO"
-TagText.TextColor3 = Color3.fromRGB(225, 190, 255)
-TagText.TextSize = 9.5
-TagText.Parent = TagBadge
-
 local KeyChip = Instance.new("Frame")
 KeyChip.Name = "KeyChip"
-KeyChip.Size = UDim2.new(0, 78, 0, 20)
-KeyChip.Position = UDim2.new(0, 148, 0.5, -10)
+KeyChip.Size = UDim2.new(0, 86, 0, 20)
+KeyChip.Position = UDim2.new(0, 95, 0.5, -10)
 KeyChip.BackgroundColor3 = Color3.fromRGB(20, 17, 30)
 KeyChip.BorderSizePixel = 0
 KeyChip.Parent = TopBar
@@ -881,7 +1170,7 @@ local ChipText = Instance.new("TextLabel")
 ChipText.Size = UDim2.new(1, 0, 1, 0)
 ChipText.BackgroundTransparency = 1
 ChipText.Font = Enum.Font.GothamMedium
-ChipText.Text = "[Right Ctrl]"
+ChipText.Text = "[" .. (getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl") .. "]"
 ChipText.TextColor3 = Color3.fromRGB(170, 140, 240)
 ChipText.TextSize = 10.5
 ChipText.Parent = KeyChip
@@ -1058,13 +1347,70 @@ local function CreateSwitch(parent, onColor)
 end
 
 -- ==========================================================
--- ROW 1: Auto Parry Keybind
+-- ROW 1: UI Toggle Keybind
+-- ==========================================================
+local MenuKeyRow = CreateRowCard("MenuKeyRow", 42, "rbxassetid://10734950309", Color3.fromRGB(175, 125, 255), "UI Keybind", Color3.fromRGB(205, 170, 255))
+local MenuKeyBtn = Instance.new("TextButton")
+MenuKeyBtn.Name = "MenuKeybindBtn"
+MenuKeyBtn.Size = UDim2.new(0, 95, 0, 26)
+MenuKeyBtn.Position = UDim2.new(1, -103, 0.5, -13)
+MenuKeyBtn.BackgroundColor3 = Color3.fromRGB(36, 30, 52)
+MenuKeyBtn.BorderSizePixel = 0
+MenuKeyBtn.Font = Enum.Font.GothamBold
+MenuKeyBtn.Text = "[" .. (getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl") .. "]"
+MenuKeyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+MenuKeyBtn.TextSize = 11.5
+MenuKeyBtn.Parent = MenuKeyRow
+
+local MenuKeyCorner = Instance.new("UICorner")
+MenuKeyCorner.CornerRadius = UDim.new(0, 6)
+MenuKeyCorner.Parent = MenuKeyBtn
+
+local MenuKeyStroke = Instance.new("UIStroke")
+MenuKeyStroke.Thickness = 1
+MenuKeyStroke.Color = Color3.fromRGB(85, 65, 125)
+MenuKeyStroke.Parent = MenuKeyBtn
+
+local listeningMenu = false
+local function StartListeningMenuKey()
+    if listeningMenu then return end
+    listeningMenu = true
+    MenuKeyBtn.Text = "[...]"
+    MenuKeyBtn.TextColor3 = Color3.fromRGB(255, 215, 0)
+    if ChipText then
+        ChipText.Text = "[...]"
+        ChipText.TextColor3 = Color3.fromRGB(255, 215, 0)
+    end
+
+    local connection
+    connection = UserInputService.InputBegan:Connect(function(input, processed)
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            getgenv().fAstConfig.MenuKeybind = input.KeyCode
+            SaveConfig()
+            local keyName = input.KeyCode.Name
+            MenuKeyBtn.Text = "[" .. keyName .. "]"
+            MenuKeyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            if ChipText then
+                ChipText.Text = "[" .. keyName .. "]"
+                ChipText.TextColor3 = Color3.fromRGB(170, 140, 240)
+            end
+            ShowHUDToast("UI Toggle Key: " .. keyName, Color3.fromRGB(175, 125, 255))
+            listeningMenu = false
+            connection:Disconnect()
+        end
+    end)
+end
+
+MenuKeyBtn.MouseButton1Click:Connect(StartListeningMenuKey)
+
+-- ==========================================================
+-- ROW 2: Auto Parry Keybind
 -- ==========================================================
 local KeyRow = CreateRowCard("KeyRow", 42, "rbxassetid://121486627050870", Color3.fromRGB(255, 215, 110), "Parry Keybind", Color3.fromRGB(255, 215, 110))
 local KeyBtn = Instance.new("TextButton")
 KeyBtn.Name = "KeybindBtn"
-KeyBtn.Size = UDim2.new(0, 68, 0, 26)
-KeyBtn.Position = UDim2.new(1, -76, 0.5, -13)
+KeyBtn.Size = UDim2.new(0, 95, 0, 26)
+KeyBtn.Position = UDim2.new(1, -103, 0.5, -13)
 KeyBtn.BackgroundColor3 = Color3.fromRGB(36, 30, 52)
 KeyBtn.BorderSizePixel = 0
 KeyBtn.Font = Enum.Font.GothamBold
@@ -1093,6 +1439,7 @@ KeyBtn.MouseButton1Click:Connect(function()
     connection = UserInputService.InputBegan:Connect(function(input, processed)
         if input.UserInputType == Enum.UserInputType.Keyboard then
             getgenv().fAstConfig.ParryKeybind = input.KeyCode
+            SaveConfig()
             KeyBtn.Text = "[" .. input.KeyCode.Name .. "]"
             KeyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
             ShowHUDToast("Parry Key: " .. input.KeyCode.Name, Color3.fromRGB(255, 215, 0))
@@ -1103,14 +1450,15 @@ KeyBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==========================================================
--- ROW 2: Auto Parry
+-- ROW 3: Auto Parry
 -- ==========================================================
-local ParryRow = CreateRowCard("ParryRow", 42, "rbxassetid://10723346959", Color3.fromRGB(185, 120, 255), "Auto Parry", Color3.fromRGB(210, 160, 255))
+local ParryRow = CreateRowCard("ParryRow", 42, "rbxassetid://7734056608", Color3.fromRGB(185, 120, 255), "Auto Parry", Color3.fromRGB(210, 160, 255))
 local ParrySwitch, SetParrySwitchState = CreateSwitch(ParryRow, Color3.fromRGB(150, 70, 255))
 
 local function SetParryState(val)
     getgenv().fAstConfig.AutoParry = val
     SetParrySwitchState(val)
+    SaveConfig()
 end
 
 ParrySwitch.MouseButton1Click:Connect(function()
@@ -1205,7 +1553,7 @@ local function ToggleDropdown(forceClose)
 
     local expandedRowH = 42 + (#BossList * 27 + 8)
     local targetRowH = isDropdownOpen and expandedRowH or 42
-    local targetMainH = isDropdownOpen and (400 + (#BossList * 27 + 8)) or 400
+    local targetMainH = isDropdownOpen and (392 + (#BossList * 27 + 8)) or 392
     local arrow = isDropdownOpen and "  ^" or "  v"
 
     BossBtn.Text = getgenv().fAstConfig.SelectedBoss .. arrow
@@ -1251,8 +1599,12 @@ for idx, b in ipairs(BossList) do
         currentBossIndex = idx
         getgenv().fAstConfig.SelectedBoss = b.Display
         getgenv().fAstConfig.SelectedBossId = b.Id
+        SaveConfig()
         ShowHUDToast("Selected: " .. b.Display, Color3.fromRGB(255, 185, 75))
         ToggleDropdown(true)
+        if getgenv().fAstConfig.AutoBoss then
+            StartBossFightNow()
+        end
     end)
 end
 
@@ -1266,14 +1618,122 @@ end)
 local BossFightRow = CreateRowCard("BossFightRow", 42, "rbxassetid://10734975692", Color3.fromRGB(255, 125, 40), "Auto Boss", Color3.fromRGB(255, 140, 50))
 local BossSwitch, SetBossSwitchState = CreateSwitch(BossFightRow, Color3.fromRGB(255, 125, 40))
 
+-- คืนค่า RequestStartFight ดั้งเดิมเพื่อให้รับ arguments ครบทุกตัว
+pcall(function()
+    local ep = GameManager:GetController("EventProgressController")
+    if ep and ep._origRequestStartFight then
+        ep.RequestStartFight = ep._origRequestStartFight
+    end
+end)
+
+local isStartingBossFight = false
+
+local function IsInActiveFight()
+    local char = LocalPlayer.Character or workspace:FindFirstChild("Player") or workspace:FindFirstChild("Player_Client")
+    if not char then return false end
+    if char:GetAttribute("InSafeZone") == true then
+        return false
+    end
+    if char:GetAttribute("InCombat") == true then
+        return true
+    end
+    if FindBossTarget("Auto (Any)") ~= nil then
+        return true
+    end
+    return false
+end
+
+local function StartBossFightNow()
+    if isStartingBossFight then return end
+    if IsInActiveFight() then
+        return
+    end
+
+    isStartingBossFight = true
+    task.spawn(function()
+        pcall(function()
+            -- 1. หากไม่ได้อยู่ในห้องฮับฮาโลวีน (PlaceId 105077286193224) ให้ออกจากสนามหรือวาร์ปเข้าฮับ
+            if game.PlaceId ~= 105077286193224 then
+                ShowHUDToast("กำลังวาร์ปไปฮับฮาโลวีนเพื่อสู้บอส...", Color3.fromRGB(255, 180, 50))
+                local eh = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("EventHub")
+                if eh and eh:FindFirstChild("Request_TravelToEventHub") then
+                    eh.Request_TravelToEventHub:FireServer()
+                else
+                    pcall(function()
+                        game:GetService("TeleportService"):Teleport(105077286193224)
+                    end)
+                end
+                return
+            end
+
+            -- 2. หากยังค้างหน้าผลการต่อสู้เก่า ให้กดออกหรือปิดหน้าผล
+            local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+            local rGui = pgui and pgui:FindFirstChild("MiniBossResultsGui")
+            if rGui and rGui.Enabled then
+                LeaveFinishedArenaOnce()
+                task.wait(0.5)
+            end
+
+            if IsInActiveFight() then return end
+
+            isReturningLobby = false
+            local bId = getgenv().fAstConfig.SelectedBossId or "Jack"
+            if bId == "Any" or not bId then bId = "Jack" end
+
+            ShowHUDToast("กำลังวาร์ปเข้าสู้บอส " .. bId .. "...", Color3.fromRGB(255, 180, 50))
+
+            -- 3. เรียกเริ่มสู้บอสผ่าน EventProgressController
+            local ep = GameManager:GetController("EventProgressController")
+            if ep and ep.RequestStartFight then
+                ep:RequestStartFight(bId, "Normal")
+            end
+
+            -- ยิงตรงสำรองผ่าน RemoteEvent
+            local epRemotes = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("EventProgress")
+            if epRemotes and epRemotes:FindFirstChild("Request_StartFight") then
+                epRemotes.Request_StartFight:FireServer(bId, "Normal")
+            end
+        end)
+        task.wait(2.0)
+        isStartingBossFight = false
+    end)
+end
+
 local function SetBossFightState(val)
     getgenv().fAstConfig.AutoBoss = val
     SetBossSwitchState(val)
-    if not val then
+    SaveConfig()
+    if val then
+        StartBossFightNow()
+    else
         hadBossFighting = false
+        snappedFrames = 0
+        local handler = CharacterController:GetLocalCharacterHandler()
+        if handler and handler.ActionManager then
+            handler.ActionManager._queuedActionType = nil
+            handler._desiredQueuedAction = nil
+        end
         ReleaseCameraLock()
     end
 end
+
+-- ลูปตรวจสอบเข้าสู้บอสอัตโนมัติเมื่ออยู่นอกการต่อสู้ (Auto Re-Queue Boss Fight)
+task.spawn(function()
+    while getgenv()._fAstRunToken == myRunToken do
+        task.wait(2.0)
+        if getgenv()._fAstRunToken ~= myRunToken then break end
+        if getgenv().fAstConfig and getgenv().fAstConfig.AutoBoss then
+            local char = LocalPlayer.Character
+            local myRoot = GetMyRoot()
+            local handler = CharacterController:GetLocalCharacterHandler()
+            local myHum = (handler and handler.Humanoid) or (char and char:FindFirstChildOfClass("Humanoid"))
+            if not IsInActiveFight() and myRoot and myHum and myHum.Health > 0 and not isReturningLobby then
+                StartBossFightNow()
+                task.wait(4.0)
+            end
+        end
+    end
+end)
 
 BossSwitch.MouseButton1Click:Connect(function()
     SetBossFightState(not getgenv().fAstConfig.AutoBoss)
@@ -1291,6 +1751,7 @@ local ReturnSwitch, SetReturnSwitchState = CreateSwitch(ReturnRow, Color3.fromRG
 local function SetReturnLobbyState(val)
     getgenv().fAstConfig.AutoReturnLobby = val
     SetReturnSwitchState(val)
+    SaveConfig()
 end
 
 ReturnSwitch.MouseButton1Click:Connect(function()
@@ -1309,6 +1770,7 @@ local RewardsSwitch, SetRewardsSwitchState = CreateSwitch(RewardsRow, Color3.fro
 local function SetClaimRewardsState(val)
     getgenv().fAstConfig.AutoClaimRewards = val
     SetRewardsSwitchState(val)
+    SaveConfig()
     if val then
         ClaimAllRewards(false)
     end
@@ -1321,79 +1783,7 @@ RewardsSwitch.MouseButton1Click:Connect(function()
     ShowHUDToast(txt, col)
 end)
 
--- ==========================================================
--- ROW 7: ACTION BUTTONS (Start Fight & Claim Now)
--- ==========================================================
-local ActionRow = Instance.new("Frame")
-ActionRow.Name = "ActionRow"
-ActionRow.Size = UDim2.new(1, 0, 0, 36)
-ActionRow.BackgroundTransparency = 1
-ActionRow.BorderSizePixel = 0
-ActionRow.Parent = Content
-
--- Button Left: Start Boss Fight
-local StartFightBtn = Instance.new("TextButton")
-StartFightBtn.Name = "StartFightBtn"
-StartFightBtn.Size = UDim2.new(0.63, -3, 1, 0)
-StartFightBtn.Position = UDim2.new(0, 0, 0, 0)
-StartFightBtn.BackgroundColor3 = Color3.fromRGB(75, 32, 130)
-StartFightBtn.BorderSizePixel = 0
-StartFightBtn.Font = Enum.Font.GothamBold
-StartFightBtn.Text = "Fight Boss"
-StartFightBtn.TextColor3 = Color3.fromRGB(235, 205, 255)
-StartFightBtn.TextSize = 12
-StartFightBtn.Parent = ActionRow
-
-local StartCorner = Instance.new("UICorner")
-StartCorner.CornerRadius = UDim.new(0, 9)
-StartCorner.Parent = StartFightBtn
-
-local StartStroke = Instance.new("UIStroke")
-StartStroke.Thickness = 1.2
-StartStroke.Color = Color3.fromRGB(155, 75, 255)
-StartStroke.Parent = StartFightBtn
-
-StartFightBtn.MouseButton1Click:Connect(function()
-    isReturningLobby = false
-    local bId = getgenv().fAstConfig.SelectedBossId
-    if bId == "Any" then bId = "Jack" end
-
-    local ep = GameManager:GetController("EventProgressController")
-    if ep and ep.RequestStartFight then
-        ShowHUDToast("Starting " .. bId .. " Fight...", Color3.fromRGB(255, 180, 50))
-        ep:RequestStartFight(bId, "Normal")
-    else
-        ShowHUDToast("สู้ได้เฉพาะตอนอยู่ในฮับฮาโลวีน", Color3.fromRGB(255, 80, 80))
-    end
-end)
-
--- Button Right: Claim All Rewards Now
-local ClaimNowBtn = Instance.new("TextButton")
-ClaimNowBtn.Name = "ClaimNowBtn"
-ClaimNowBtn.Size = UDim2.new(0.37, -3, 1, 0)
-ClaimNowBtn.Position = UDim2.new(0.63, 3, 0, 0)
-ClaimNowBtn.BackgroundColor3 = Color3.fromRGB(130, 26, 75)
-ClaimNowBtn.BorderSizePixel = 0
-ClaimNowBtn.Font = Enum.Font.GothamBold
-ClaimNowBtn.Text = "Claim Rewards"
-ClaimNowBtn.TextColor3 = Color3.fromRGB(255, 210, 235)
-ClaimNowBtn.TextSize = 12
-ClaimNowBtn.Parent = ActionRow
-
-local ClaimCorner = Instance.new("UICorner")
-ClaimCorner.CornerRadius = UDim.new(0, 9)
-ClaimCorner.Parent = ClaimNowBtn
-
-local ClaimStroke = Instance.new("UIStroke")
-ClaimStroke.Thickness = 1.2
-ClaimStroke.Color = Color3.fromRGB(255, 80, 160)
-ClaimStroke.Parent = ClaimNowBtn
-
-ClaimNowBtn.MouseButton1Click:Connect(function()
-    ClaimAllRewards(false)
-end)
-
--- ตั้งค่าสถานะเริ่มต้นของสวิตช์ตาม fAstConfig (ปิดทั้งหมดเป็นค่าเริ่มต้น)
+-- ตั้งค่าสถานะเริ่มต้นของสวิตช์ตาม fAstConfig
 SetParryState(getgenv().fAstConfig.AutoParry)
 SetBossFightState(getgenv().fAstConfig.AutoBoss)
 SetReturnLobbyState(getgenv().fAstConfig.AutoReturnLobby)
@@ -1465,13 +1855,15 @@ CloseBtn.MouseButton1Click:Connect(function()
     Main.Visible = false
     FloatingPill.Visible = true
     ToggleDropdown(true)
-    ShowHUDToast("ปิดเมนูแล้ว (กด [Right Ctrl] หรือคลิกปุ่มลอย ⚡ เพื่อเปิด)", Color3.fromRGB(170, 90, 255))
+    local kName = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl"
+    ShowHUDToast("ปิดเมนูแล้ว (กด [" .. kName .. "] หรือคลิกปุ่มลอย ⚡ เพื่อเปิด)", Color3.fromRGB(170, 90, 255))
 end)
 
 -- Keybind Listeners
 getgenv()._fAstInputConn = UserInputService.InputBegan:Connect(function(input, processed)
-    -- เปิด/ปิดเมนูได้ 100% ตลอดเวลา แม้อยู่ระหว่างต่อสู้กับบอส (ไม่ต้องสนใจ processed)
-    if input.KeyCode == Enum.KeyCode.RightControl or input.KeyCode == Enum.KeyCode.Insert or input.KeyCode == Enum.KeyCode.RightAlt then
+    -- เปิด/ปิดเมนูได้ 100% ตลอดเวลา ตามปุ่มที่ตั้งไว้ (หรือ RightControl/Insert/RightAlt เป็นปุ่มสำรอง)
+    local targetMenuKey = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind or Enum.KeyCode.RightControl
+    if input.KeyCode == targetMenuKey or input.KeyCode == Enum.KeyCode.RightControl or input.KeyCode == Enum.KeyCode.Insert or input.KeyCode == Enum.KeyCode.RightAlt then
         ToggleVisibility()
         return
     end
@@ -1486,5 +1878,6 @@ getgenv()._fAstInputConn = UserInputService.InputBegan:Connect(function(input, p
     end
 end)
 
-ShowHUDToast("⚡ fAst Hub v10 โหลดสำเร็จ (กด [Right Ctrl] หรือคลิกปุ่มลอยเพื่อเปิด)", Color3.fromRGB(170, 90, 255))
+local startKeyName = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl"
+ShowHUDToast("⚡ fAst Hub v10 โหลดสำเร็จ (กด [" .. startKeyName .. "] หรือคลิกปุ่มลอยเพื่อเปิด)", Color3.fromRGB(170, 90, 255))
 print("[cook45] fAst Hub V10 (Modern Cyber Glass UI + Auto Rewards) Active!")
