@@ -1,3 +1,72 @@
+Lua
+-- // Configuration
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1567210266985500752/Lq00e6B_0s5ypUUtsqhFuXc8Th2OI5EknbT_GSX_IN2BW7w--W-ps_QOJz0Sg17MLPnD"
+
+-- // Counter API (ตัวนับรันเดิม)
+pcall(function()
+    game:HttpGet("https://api.counterapi.dev/v1/fAst-Hub/script_runs/up")
+end)
+
+-- // Discord Webhook Notification
+task.spawn(function()
+    pcall(function()
+        local HttpService = game:GetService("HttpService")
+        local Players = game:GetService("Players")
+        local MarketplaceService = game:GetService("MarketplaceService")
+        local player = Players.LocalPlayer
+
+        -- ดึงชื่อเกม
+        local gameName = "Unknown Game"
+        pcall(function()
+            gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name
+        end)
+
+        -- ข้อมูล Request ส่งหา Discord
+        local httpRequest = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+        if httpRequest and WEBHOOK_URL ~= "" and not string.find(WEBHOOK_URL, "วาง_URL") then
+            local data = {
+                ["embeds"] = {{
+                    ["title"] = "🚀 fAst Hub | Script Executed!",
+                    ["color"] = 5763719, -- สีเขียว
+                    ["fields"] = {
+                        {
+                            ["name"] = "👤 Player",
+                            ["value"] = string.format("%s (@%s)", player.DisplayName, player.Name),
+                            ["inline"] = true
+                        },
+                        {
+                            ["name"] = "🆔 User ID",
+                            ["value"] = tostring(player.UserId),
+                            ["inline"] = true
+                        },
+                        {
+                            ["name"] = "🎮 Game",
+                            ["value"] = string.format("%s (ID: %d)", gameName, game.PlaceId),
+                            ["inline"] = false
+                        },
+                        {
+                            ["name"] = "⏰ Time",
+                            ["value"] = string.format("<t:%d:R>", os.time()),
+                            ["inline"] = true
+                        }
+                    },
+                    ["footer"] = {
+                        ["text"] = "fAst Hub Tracker System"
+                    }
+                }}
+            }
+
+            httpRequest({
+                Url = WEBHOOK_URL,
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json"
+                },
+                Body = HttpService:JSONEncode(data)
+            })
+        end
+    end)
+end)
 -- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
