@@ -157,24 +157,172 @@ local function HookAllBossHazards()
 end
 HookAllBossHazards()
 
--- // 5.1 SILENT AIM / 100% HIT REGISTRATION HOOK (ตีโดนทุกครั้ง 100%) // --
--- เมื่อเซิร์ฟเวอร์ขอเช็คตำแหน่ง Hitbox การฟัน (RequestHitboxOnImpact)
--- เราจะส่งพิกัด CFrame ที่จ่อหน้าบอส 2.5 studs ตรงจุดตายพอดี ทำให้ทุกการโจมตีของผู้เล่นโดน 100%
+-- // 5. TARGETING & BOSS DETECTION SYSTEM // --
+local function IsBossAlive(model)
+    if not model or not model.Parent then return false end
+
+    -- ห้ามเลือก NPC ใน Lobby/Hub (เช่น NPC ใน NPCs, NPCSpots, หรือแผนที่ Hub)
+    if model.Parent and (model.Parent.Name == "NPCs" or model.Parent.Name == "NPCSpots") then
+        return false
+    end
+    if workspace:FindFirstChild("HalloweenEventHubMap") and model:IsDescendantOf(workspace.HalloweenEventHubMap) then
+        return false
+    end
+
+    local attrHealth = model:GetAttribute("Health")
+    if attrHealth ~= nil and attrHealth <= 0 then
+        return false
+    end
+
+    local npcHealth = model:GetAttribute("NPCHealth")
+    if npcHealth ~= nil and npcHealth <= 0 then
+        return false
+    end
+
+    if model:GetAttribute("Dead") == true or model:GetAttribute("IsDead") == true then
+        return false
+    end
+
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then
+        return false
+    end
+
+    return true
+end
+
+local function FindBossTarget(chosenBoss)
+    -- ถ้าอยู่ในหน้า Lobby/Event Hub จะไม่มีบอสให้สู้ในสนาม ห้ามเล็ง NPC ในล็อบบี้เด็ดขาด
+    if workspace:FindFirstChild("HalloweenEventHubMap") or game.PlaceId == 105077286193224 then
+        return nil
+    end
+
+    local char = LocalPlayer.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+
+    local candidates = {}
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
+            local hum = obj:FindFirstChildOfClass("Humanoid")
+            local root = obj:FindFirstChild("HumanoidRootPart")
+            if hum and root and IsBossAlive(obj) then
+                local plr = Players:GetPlayerFromCharacter(obj)
+                if not plr then
+                    table.insert(candidates, obj)
+                end
+            end
+        end
+    end
+
+    if #candidates == 0 then
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
+                local hum = obj:FindFirstChildOfClass("Humanoid")
+                local root = obj:FindFirstChild("HumanoidRootPart")
+                if hum and root and IsBossAlive(obj) and (root.Position - myRoot.Position).Magnitude < 180 then
+                    local plr = Players:GetPlayerFromCharacter(obj)
+                    if not plr then
+                        table.insert(candidates, obj)
+                    end
+                end
+            end
+        end
+    end
+
+    -- [PvP Fallback]: ถ้าอยู่ในสนามประลองและไม่มีบอส NPC ให้เล็งคู่ต่อสู้ที่ล็อคเป้าหรือกำลังสู้ด้วย
+    if #candidates == 0 then
+        pcall(function()
+            local tlc = GameManager:GetController("TargetLockController")
+            if tlc and tlc.Target and tlc.Target.Parent and tlc.Target.Parent ~= char and IsBossAlive(tlc.Target.Parent) then
+                table.insert(candidates, tlc.Target.Parent)
+            end
+        end)
+        if #candidates == 0 and char:GetAttribute("InCombat") == true then
+            for _, obj in ipairs(workspace:GetChildren()) do
+                if obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
+                    local root = obj:FindFirstChild("HumanoidRootPart")
+                    if root and IsBossAlive(obj) and obj:GetAttribute("InCombat") == true then
+                        table.insert(candidates, obj)
+                    end
+                end
+            end
+        end
+    end
+
+    if #candidates == 0 then return nil end
+
+    if chosenBoss and chosenBoss ~= "Auto (Any)" then
+        local cLower = string.lower(chosenBoss)
+        for _, m in ipairs(candidates) do
+            local nLower = string.lower(m.Name)
+            if string.find(nLower, cLower) or (chosenBoss == "Nephra & Ammut" and (string.find(nLower, "nephra") or string.find(nLower, "ammut"))) then
+                return m
+            end
+        end
+    end
+
+    table.sort(candidates, function(a, b)
+        local ra = a:FindFirstChild("HumanoidRootPart")
+        local rb = b:FindFirstChild("HumanoidRootPart")
+        if ra and rb then
+            return (ra.Position - myRoot.Position).Magnitude < (rb.Position - myRoot.Position).Magnitude
+        end
+        return false
+    end)
+    return candidates[1]
+end
+
+-- ค้นหาศัตรูเป้าหมาย (รองรับทั้งบอสและผู้เล่นใน PVP เพื่อให้อันติเข้าเป้า 100%)
+local function FindAnyTarget()
+    if getgenv().fAstConfig then
+        local b = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
+        if b and IsBossAlive(b) then return b end
+    end
+
+    pcall(function()
+        local tlc = GameManager:GetController("TargetLockController")
+        if tlc and tlc.Target and IsBossAlive(tlc.Target.Parent) then
+            return tlc.Target.Parent
+        end
+    end)
+
+    local char = LocalPlayer.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+
+    local closest, closestDist = nil, 65
+    for _, m in ipairs(workspace:GetChildren()) do
+        if m:IsA("Model") and m ~= char and m.Name ~= "Player_Client" then
+            local r = m:FindFirstChild("HumanoidRootPart")
+            local h = m:FindFirstChildOfClass("Humanoid")
+            if r and h and IsBossAlive(m) then
+                local d = (r.Position - myRoot.Position).Magnitude
+                if d < closestDist then
+                    closest = m
+                    closestDist = d
+                end
+            end
+        end
+    end
+    return closest
+end
+
+-- // 5.1 SILENT AIM / 100% HIT REGISTRATION HOOK (ตีและอันติโดนทุกครั้ง 100%) // --
+-- เมื่อเซิร์ฟเวอร์ขอเช็คตำแหน่ง Hitbox การฟันหรืออันติ (RequestHitboxOnImpact)
+-- เราจะส่งพิกัด CFrame ที่คำนวณหักล้าง Offset -3.0 studs ของตัวเกม ทำให้จุดกึ่งกลาง Hitbox ตกใส่ตัวศัตรู 100%
 local RequestHitboxOnImpact = ReplicatedStorage.Remotes.PlayerCharacter.Request:WaitForChild("RequestHitboxOnImpact")
 
 local function GetPerfectStrikeCFrame(origCF)
-    if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoBoss then
-        return origCF
-    end
-    local targetBoss = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
-    if targetBoss and IsBossAlive(targetBoss) then
-        local bRoot = targetBoss:FindFirstChild("HumanoidRootPart")
+    local target = FindAnyTarget()
+    if target then
+        local bRoot = target:FindFirstChild("HumanoidRootPart")
         if bRoot then
             local toB = (bRoot.Position - origCF.Position)
             local flatToB = Vector3.new(toB.X, 0, toB.Z)
             local flatUnit = flatToB.Magnitude > 0.1 and flatToB.Unit or origCF.LookVector
-            -- ปรับระดับความสูงและตำแหน่งให้อยู่ด้านหน้าบอส 2.4 studs ที่ระดับบอสพอดี ทำให้ Hitbox โดน 100%
-            local strikePos = Vector3.new(bRoot.Position.X - flatUnit.X * 2.4, bRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 2.4)
+            -- ส่งพิกัดด้านหน้าเป้าหมาย 3.0 studs ที่ระดับบอสพอดี ทำให้กล่อง Hitbox (Offset -3.0 ถึง -3.5 studs) ครอบศัตรู 100%
+            local strikePos = Vector3.new(bRoot.Position.X - flatUnit.X * 3.0, bRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 3.0)
             return CFrame.lookAt(strikePos, bRoot.Position)
         end
     end
@@ -227,92 +375,10 @@ local function IsUltimateAttack(impactData)
     return false
 end
 
--- ตรวจสอบว่าบอสยังมีชีวิตอยู่จริงหรือไม่ (ตรวจทั้ง Attribute Health และ Humanoid)
-local function IsBossAlive(model)
-    if not model or not model.Parent then return false end
+-- // 6. HOOK DEFENSE & ULTIMATE ENGINE // --
+local isPerformingUltimate = false
+local ultCastTime = 0
 
-    -- บอสใน Dueling Grounds เลือดจริงจะอยู่ที่ Attribute "Health" (ไม่ใช่ Humanoid.Health)
-    local attrHealth = model:GetAttribute("Health")
-    if attrHealth ~= nil and attrHealth <= 0 then
-        return false
-    end
-
-    local npcHealth = model:GetAttribute("NPCHealth")
-    if npcHealth ~= nil and npcHealth <= 0 then
-        return false
-    end
-
-    if model:GetAttribute("Dead") == true or model:GetAttribute("IsDead") == true then
-        return false
-    end
-
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health <= 0 then
-        return false
-    end
-
-    return true
-end
-
--- ค้นหา Model บอสตามที่ผู้ใช้เลือก (รองรับทั้งชื่อตรงและ MiniBoss_xxx)
-local function FindBossTarget(chosenBoss)
-    local char = LocalPlayer.Character
-    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil end
-
-    local candidates = {}
-    for _, obj in ipairs(workspace:GetChildren()) do
-        if obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
-            local hum = obj:FindFirstChildOfClass("Humanoid")
-            local root = obj:FindFirstChild("HumanoidRootPart")
-            if hum and root and IsBossAlive(obj) then
-                local plr = Players:GetPlayerFromCharacter(obj)
-                if not plr then
-                    table.insert(candidates, obj)
-                end
-            end
-        end
-    end
-
-    if #candidates == 0 then
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") and obj ~= char and obj.Name ~= "Player_Client" then
-                local hum = obj:FindFirstChildOfClass("Humanoid")
-                local root = obj:FindFirstChild("HumanoidRootPart")
-                if hum and root and IsBossAlive(obj) and (root.Position - myRoot.Position).Magnitude < 180 then
-                    local plr = Players:GetPlayerFromCharacter(obj)
-                    if not plr then
-                        table.insert(candidates, obj)
-                    end
-                end
-            end
-        end
-    end
-
-    if #candidates == 0 then return nil end
-
-    if chosenBoss and chosenBoss ~= "Auto (Any)" then
-        local cLower = string.lower(chosenBoss)
-        for _, m in ipairs(candidates) do
-            local nLower = string.lower(m.Name)
-            if string.find(nLower, cLower) or (chosenBoss == "Nephra & Ammut" and (string.find(nLower, "nephra") or string.find(nLower, "ammut"))) then
-                return m
-            end
-        end
-    end
-
-    table.sort(candidates, function(a, b)
-        local ra = a:FindFirstChild("HumanoidRootPart")
-        local rb = b:FindFirstChild("HumanoidRootPart")
-        if ra and rb then
-            return (ra.Position - myRoot.Position).Magnitude < (rb.Position - myRoot.Position).Magnitude
-        end
-        return false
-    end)
-    return candidates[1]
-end
-
--- // 6. HOOK DEFENSE ENGINE // --
 local function ApplyCleanHook(char)
     task.spawn(function()
         local handler = nil
@@ -324,6 +390,32 @@ local function ApplyCleanHook(char)
         if not handler or not handler.ActionManager then return end
 
         local am = handler.ActionManager
+
+        -- [Ultimate 100% Snap Hook]: เมื่อใช้อันติไม่ว่าจะกดเองหรือระบบออโต้ จะพุ่งประกบหน้าเป้าหมายทันที
+        local origTryQueue = am.TryQueueBasicAttack
+        if origTryQueue and not am._fAstUltHooked then
+            am._fAstUltHooked = true
+            am.TryQueueBasicAttack = function(self, attackType, ...)
+                if attackType == "Ultimate" then
+                    local target = FindAnyTarget()
+                    if target then
+                        local bRoot = target:FindFirstChild("HumanoidRootPart")
+                        local myChar = LocalPlayer.Character
+                        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+                        if bRoot and myRoot then
+                            local toB = (bRoot.Position - myRoot.Position)
+                            local flat = Vector3.new(toB.X, 0, toB.Z)
+                            local unit = flat.Magnitude > 0.1 and flat.Unit or myRoot.CFrame.LookVector
+                            -- วาร์ปประกบหน้าศัตรู 2.2 studs ที่ระดับความสูงเป้าหมายพอดี
+                            myRoot.CFrame = CFrame.lookAt(Vector3.new(bRoot.Position.X - unit.X * 2.2, bRoot.Position.Y, bRoot.Position.Z - unit.Z * 2.2), bRoot.Position)
+                            isPerformingUltimate = true
+                            ultCastTime = tick()
+                        end
+                    end
+                end
+                return origTryQueue(self, attackType, ...)
+            end
+        end
 
         am._computeImpactResolution = function(self, impactData)
             local isFromBoss = false
@@ -490,11 +582,43 @@ end)
 -- // 8. AUTO BOSS SMART COMBAT ENGINE (ตีตรงจังหวะ ไม่ตีมั่ว หันหาบอสเฉพาะตอนสู้) // --
 local lastAttackTime = 0
 local hadBossFighting = false
-local isPerformingUltimate = false
-local ultCastTime = 0
+
+-- [ฟังก์ชันช่วยปลดล็อคมุมกล้องเมื่ออยู่นอกการต่อสู้หรือปิดบอท]
+local function ReleaseCameraLock()
+    pcall(function()
+        local tlc = GameManager:GetController("TargetLockController")
+        if tlc then
+            tlc:SetForcedTargetLock(nil)
+            tlc:SetTarget(nil)
+        end
+    end)
+    pcall(function()
+        local char = LocalPlayer.Character
+        if char then
+            local handler = CharacterController:GetCharacterHandler(char)
+            if handler then
+                handler.TargetLock = nil
+                handler.OverrideLookDirection = nil
+                handler.DesiredLookDirection = nil
+                handler._desiredQueuedAction = nil
+            end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local cam = workspace.CurrentCamera
+            if cam and hum and cam.CameraSubject ~= hum then
+                cam.CameraSubject = hum
+            end
+        end
+    end)
+end
 
 getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
-    if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoBoss then return end
+    if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoBoss then
+        if hadBossFighting then
+            hadBossFighting = false
+            ReleaseCameraLock()
+        end
+        return
+    end
 
     local char = LocalPlayer.Character
     if not char then return end
@@ -508,27 +632,12 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     local targetBoss = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
 
-    -- [ฟังก์ชันช่วยปลดล็อคมุมกล้องเมื่ออยู่นอกการต่อสู้]
-    local function ReleaseCameraLock()
-        pcall(function()
-            local tlc = GameManager:GetController("TargetLockController")
-            if tlc and tlc.ForcedTargetLock then
-                tlc:SetForcedTargetLock(nil)
-            end
-        end)
-    end
-
     -- [ตรวจสอบสถานะการต่อสู้]: บอสต้องยังมีชีวิตอยู่จริง
     if not targetBoss or not IsBossAlive(targetBoss) then
-        handler.TargetLock = nil
-        handler.OverrideLookDirection = nil
-        handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
-        handler._desiredQueuedAction = nil
-        isPerformingUltimate = false
-        ReleaseCameraLock()
-
         if hadBossFighting then
             hadBossFighting = false
+            isPerformingUltimate = false
+            ReleaseCameraLock()
             ShowHUDToast("🏆 บอสตายแล้ว! หยุดโจมตีอัตโนมัติ", Color3.fromRGB(50, 255, 120))
             if TriggerAutoReturnToLobby then
                 TriggerAutoReturnToLobby("BossDeathInCombat")
@@ -539,12 +648,11 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     local bRoot = targetBoss:FindFirstChild("HumanoidRootPart")
     if not bRoot or not IsBossAlive(targetBoss) then
-        handler.TargetLock = nil
-        handler.OverrideLookDirection = nil
-        handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
-        handler._desiredQueuedAction = nil
-        isPerformingUltimate = false
-        ReleaseCameraLock()
+        if hadBossFighting then
+            hadBossFighting = false
+            isPerformingUltimate = false
+            ReleaseCameraLock()
+        end
         return
     end
 
@@ -553,12 +661,11 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     -- ตรวจสอบระยะต่อสู้ (ถ้าอยู่ในห้องสู้บอส ระยะไม่เกิน 85 studs)
     if dist > 85 then
-        handler.TargetLock = nil
-        handler.OverrideLookDirection = nil
-        handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
-        handler._desiredQueuedAction = nil
-        isPerformingUltimate = false
-        ReleaseCameraLock()
+        if hadBossFighting then
+            hadBossFighting = false
+            isPerformingUltimate = false
+            ReleaseCameraLock()
+        end
         return
     end
 
@@ -567,7 +674,7 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     -- [ตรวจจับสถานะอันติ]: ดูว่าอยู่ในจังหวะร่ายหรือท่าอนิเมชันอันติหรือไม่
     local currentAct = am.CurrentAction
     local actName = currentAct and tostring(currentAct.Name) or ""
-    local isUltActionActive = (currentAct and (currentAct.ActionType == "Ultimate" or string.find(actName, "Ultimate"))) or (tick() - ultCastTime < 1.4)
+    local isUltActionActive = (currentAct and (currentAct.ActionType == "Ultimate" or string.find(actName, "Ultimate"))) or (tick() - ultCastTime < 1.8)
     if not isUltActionActive then
         isPerformingUltimate = false
     end
@@ -586,20 +693,13 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         handler.PhysicsComponent.AlignOrientation.CFrame = CFrame.lookAt(myRoot.Position, lookTarget)
     end
 
-    -- หมุนมุมกล้อง (Camera) ให้หันจับเป้าบอสที่กำลังสู้อยู่แบบนุ่มนวล
+    -- หันมุมกล้องผ่านระบบ TargetLockController ของเกม (นุ่มนวลและไม่ขัดขืนการขยับเมาส์ของผู้เล่น)
     pcall(function()
         local tlc = GameManager:GetController("TargetLockController")
         if tlc and tlc.ForcedTargetLock ~= bRoot then
             tlc:SetForcedTargetLock(bRoot)
         end
     end)
-
-    local cam = workspace.CurrentCamera
-    if cam then
-        local camFocus = bRoot.Position + Vector3.new(0, 1.2, 0)
-        local targetCamCF = CFrame.lookAt(cam.CFrame.Position, camFocus)
-        cam.CFrame = cam.CFrame:Lerp(targetCamCF, 0.25)
-    end
 
     -- ระยะเป้าหมายระดับประชิด: 2.5 studs เพื่อให้ฟันโดน 100% ทุกอาวุธ (ไม่ฟันลม)
     local targetDist = (isPerformingUltimate or isUltActionActive) and 2.2 or 2.5
@@ -637,8 +737,8 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
                 isPerformingUltimate = true
                 ultCastTime = tick()
 
-                -- วาร์ปประกบหน้าบอสระดับ 2.8 studs ในเสี้ยววินาทีก่อนปล่อยอันติ
-                myRoot.CFrame = CFrame.new(Vector3.new(bRoot.Position.X - flatUnit.X * 2.8, myRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 2.8), lookTarget)
+                -- วาร์ปประกบหน้าบอสระดับ 2.2 studs ในเสี้ยววินาทีก่อนปล่อยอันติ
+                myRoot.CFrame = CFrame.lookAt(Vector3.new(bRoot.Position.X - flatUnit.X * 2.2, bRoot.Position.Y, bRoot.Position.Z - flatUnit.Z * 2.2), bRoot.Position)
 
                 handler._desiredQueuedAction = "Ultimate"
                 am:TryQueueBasicAttack("Ultimate")
@@ -648,17 +748,6 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
                 if not am._queuedActionType then
                     handler._desiredQueuedAction = "LightAttack"
                     am:TryQueueBasicAttack("Light")
-                end
-
-                -- คลิกเสมือนเสริมให้ออกดาบต่อเนื่องไม่มีสะดุด
-                local now = tick()
-                if now - lastAttackTime >= 0.1 then
-                    lastAttackTime = now
-                    pcall(function()
-                        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-                        task.wait(0.015)
-                        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-                    end)
                 end
             end
         end
@@ -1180,6 +1269,10 @@ local BossSwitch, SetBossSwitchState = CreateSwitch(BossFightRow, Color3.fromRGB
 local function SetBossFightState(val)
     getgenv().fAstConfig.AutoBoss = val
     SetBossSwitchState(val)
+    if not val then
+        hadBossFighting = false
+        ReleaseCameraLock()
+    end
 end
 
 BossSwitch.MouseButton1Click:Connect(function()
