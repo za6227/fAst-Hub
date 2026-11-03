@@ -1,72 +1,3 @@
-Lua
--- // Configuration
-local WEBHOOK_URL = "https://discord.com/api/webhooks/1567210266985500752/Lq00e6B_0s5ypUUtsqhFuXc8Th2OI5EknbT_GSX_IN2BW7w--W-ps_QOJz0Sg17MLPnD"
-
--- // Counter API (ตัวนับรันเดิม)
-pcall(function()
-    game:HttpGet("https://api.counterapi.dev/v1/fAst-Hub/script_runs/up")
-end)
-
--- // Discord Webhook Notification
-task.spawn(function()
-    pcall(function()
-        local HttpService = game:GetService("HttpService")
-        local Players = game:GetService("Players")
-        local MarketplaceService = game:GetService("MarketplaceService")
-        local player = Players.LocalPlayer
-
-        -- ดึงชื่อเกม
-        local gameName = "Unknown Game"
-        pcall(function()
-            gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name
-        end)
-
-        -- ข้อมูล Request ส่งหา Discord
-        local httpRequest = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
-        if httpRequest and WEBHOOK_URL ~= "" and not string.find(WEBHOOK_URL, "วาง_URL") then
-            local data = {
-                ["embeds"] = {{
-                    ["title"] = "🚀 fAst Hub | Script Executed!",
-                    ["color"] = 5763719, -- สีเขียว
-                    ["fields"] = {
-                        {
-                            ["name"] = "👤 Player",
-                            ["value"] = string.format("%s (@%s)", player.DisplayName, player.Name),
-                            ["inline"] = true
-                        },
-                        {
-                            ["name"] = "🆔 User ID",
-                            ["value"] = tostring(player.UserId),
-                            ["inline"] = true
-                        },
-                        {
-                            ["name"] = "🎮 Game",
-                            ["value"] = string.format("%s (ID: %d)", gameName, game.PlaceId),
-                            ["inline"] = false
-                        },
-                        {
-                            ["name"] = "⏰ Time",
-                            ["value"] = string.format("<t:%d:R>", os.time()),
-                            ["inline"] = true
-                        }
-                    },
-                    ["footer"] = {
-                        ["text"] = "fAst Hub Tracker System"
-                    }
-                }}
-            }
-
-            httpRequest({
-                Url = WEBHOOK_URL,
-                Method = "POST",
-                Headers = {
-                    ["Content-Type"] = "application/json"
-                },
-                Body = HttpService:JSONEncode(data)
-            })
-        end
-    end)
-end)
 -- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
@@ -83,30 +14,23 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
 
-local LocalPlayer = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
-
--- รองรับทั้ง Delta (Android/iOS) และ PC Executor (gethui หรือ PlayerGui)
-local function GetSafeGuiParent()
-    if type(gethui) == "function" then
-        local ok, res = pcall(function()
-            local h = gethui()
-            if h then
-                local test = Instance.new("Folder")
-                test.Parent = h
-                test:Destroy()
-                return h
-            end
-        end)
-        if ok and res then return res end
-    end
-    return LocalPlayer:WaitForChild("PlayerGui")
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    LocalPlayer = Players.LocalPlayer
 end
-local guiParent = GetSafeGuiParent()
-local pgui = LocalPlayer:WaitForChild("PlayerGui")
-local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local PlayerCharacter = Remotes:WaitForChild("PlayerCharacter")
+local pgui = LocalPlayer:WaitForChild("PlayerGui", 15) or LocalPlayer:FindFirstChildOfClass("PlayerGui")
 
--- 1. ล้าง Hook, ลูป และ GUI เก่าออกทั้งหมด
+local isMobile = UserInputService.TouchEnabled or not UserInputService.KeyboardEnabled
+
+-- กำหนดให้แสดงผลผ่าน PlayerGui โดยตรง เพื่อการันตี 100% ว่า UI จะขึ้นบนหน้าจอมือถือ (Delta Android/iOS) และ PC ทุกตัวรัน
+local guiParent = pgui
+
+-- ป้องกันข้อผิดพลาดตอนโหลด Remotes บน Delta
+local Remotes = ReplicatedStorage:WaitForChild("Remotes", 15)
+local PlayerCharacter = Remotes and Remotes:WaitForChild("PlayerCharacter", 15)
+
+-- 1. ล้าง Hook, ลูป และ GUI เก่าออกทั้งหมด (แยก pcall เพื่อความปลอดภัยสูงสุดบน Delta Android)
 local myRunToken = os.clock()
 getgenv()._fAstRunToken = myRunToken
 
@@ -119,14 +43,12 @@ getgenv().DG_AutoParry = nil
 getgenv().BossBot = nil
 getgenv().JackCombat = nil
 
-pcall(function()
-    if gethui and gethui():FindFirstChild("fAstHub_DG") then gethui().fAstHub_DG:Destroy() end
-    if CoreGui:FindFirstChild("fAstHub_DG") then CoreGui.fAstHub_DG:Destroy() end
-    if pgui:FindFirstChild("fAstHub_DG") then pgui.fAstHub_DG:Destroy() end
-    if gethui and gethui():FindFirstChild("fAstToastGui") then gethui().fAstToastGui:Destroy() end
-    if CoreGui:FindFirstChild("fAstToastGui") then CoreGui.fAstToastGui:Destroy() end
-    if pgui:FindFirstChild("fAstToastGui") then pgui.fAstToastGui:Destroy() end
-end)
+pcall(function() if type(gethui) == "function" and gethui() then local g = gethui():FindFirstChild("fAstHub_DG") if g then g:Destroy() end end end)
+pcall(function() if pgui then local g = pgui:FindFirstChild("fAstHub_DG") if g then g:Destroy() end end end)
+pcall(function() local g = CoreGui:FindFirstChild("fAstHub_DG") if g then g:Destroy() end end)
+pcall(function() if type(gethui) == "function" and gethui() then local g = gethui():FindFirstChild("fAstToastGui") if g then g:Destroy() end end end)
+pcall(function() if pgui then local g = pgui:FindFirstChild("fAstToastGui") if g then g:Destroy() end end end)
+pcall(function() local g = CoreGui:FindFirstChild("fAstToastGui") if g then g:Destroy() end end)
 
 -- 2. ระบบ Auto-Run อัตโนมัติเมื่อย้ายห้อง / วาร์ปเข้าห้องดวล / เข้าเล่นแรงค์ (Queue On Teleport - รองรับ Delta / Fluxus / Synapse)
 local qot = (syn and syn.queue_on_teleport) 
@@ -154,13 +76,34 @@ if qot then
     end
 end
 
--- 3. ฟังก์ชันออริจินัลแท้ๆ จาก BaseActionManager (ไม่ซ้อน Hook)
-local BaseActionManager = require(ReplicatedStorage.Modules.BaseActionManager)
-local CleanOriginalCompute = BaseActionManager._computeImpactResolution
+-- 3. ฟังก์ชันออริจินัลแท้ๆ จาก BaseActionManager & GameManager (พร้อม Timeout โหลดปลอดภัยบนมือถือ)
+local BaseActionManager = nil
+local CleanOriginalCompute = nil
+pcall(function()
+    local mods = ReplicatedStorage:WaitForChild("Modules", 15)
+    local bam = mods and mods:WaitForChild("BaseActionManager", 15)
+    if bam then
+        BaseActionManager = require(bam)
+        CleanOriginalCompute = BaseActionManager._computeImpactResolution
+    end
+end)
 
-local GameManager = require(ReplicatedStorage:WaitForChild("GameManager"))
-local CharacterController = GameManager:GetController("CharacterController")
-local PlayerInputController = GameManager:GetController("PlayerInputController")
+local GameManager = nil
+local CharacterController = nil
+local PlayerInputController = nil
+local function ResolveGameControllers()
+    if CharacterController and PlayerInputController then return true end
+    pcall(function()
+        local gmMod = ReplicatedStorage:WaitForChild("GameManager", 15)
+        if gmMod then
+            GameManager = require(gmMod)
+            CharacterController = GameManager:GetController("CharacterController")
+            PlayerInputController = GameManager:GetController("PlayerInputController")
+        end
+    end)
+    return CharacterController ~= nil
+end
+ResolveGameControllers()
 
 -- รายการบอสที่สามารถเลือกสู้ได้
 local BossList = {
@@ -548,8 +491,6 @@ local function FindAnyTarget()
 end
 
 -- // 5.1 SILENT AIM / 100% HIT REGISTRATION HOOK (ตีและอันติโดนทุกครั้ง 100%) // --
-local RequestHitboxOnImpact = ReplicatedStorage.Remotes.PlayerCharacter.Request:WaitForChild("RequestHitboxOnImpact")
-
 local function GetPerfectStrikeCFrame(origCF)
     if typeof(origCF) ~= "CFrame" then return origCF end
     local target = FindAnyTarget()
@@ -570,19 +511,27 @@ local function GetPerfectStrikeCFrame(origCF)
     return origCF
 end
 
-pcall(function()
-    if restorefunction and isfunctionhooked and isfunctionhooked(RequestHitboxOnImpact.FireServer) then
-        restorefunction(RequestHitboxOnImpact.FireServer)
-    end
-    if type(hookfunction) == "function" then
-        local oldHitboxFire
-        oldHitboxFire = hookfunction(RequestHitboxOnImpact.FireServer, function(self, cf, t, id)
-            if self == RequestHitboxOnImpact then
-                cf = GetPerfectStrikeCFrame(cf)
-            end
-            return oldHitboxFire(self, cf, t, id)
-        end)
-    end
+task.spawn(function()
+    pcall(function()
+        local rem = ReplicatedStorage:WaitForChild("Remotes", 15)
+        local pc = rem and rem:WaitForChild("PlayerCharacter", 15)
+        local req = pc and pc:WaitForChild("Request", 15)
+        local RequestHitboxOnImpact = req and req:WaitForChild("RequestHitboxOnImpact", 15)
+        if not RequestHitboxOnImpact then return end
+
+        if restorefunction and isfunctionhooked and isfunctionhooked(RequestHitboxOnImpact.FireServer) then
+            restorefunction(RequestHitboxOnImpact.FireServer)
+        end
+        if type(hookfunction) == "function" then
+            local oldHitboxFire
+            oldHitboxFire = hookfunction(RequestHitboxOnImpact.FireServer, function(self, cf, t, id)
+                if self == RequestHitboxOnImpact then
+                    cf = GetPerfectStrikeCFrame(cf)
+                end
+                return oldHitboxFire(self, cf, t, id)
+            end)
+        end
+    end)
 end)
 
 -- เช็คสกิลอันติของคู่ต่อสู้ใน PVP
@@ -1192,6 +1141,7 @@ local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "fAstHub_DG"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.DisplayOrder = 99999
+ScreenGui.IgnoreGuiInset = true
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = guiParent
 
@@ -1202,7 +1152,7 @@ Main.Position = UDim2.new(0.04, 0, 0.15, 0)
 Main.BackgroundColor3 = Color3.fromRGB(15, 13, 24)
 Main.BorderSizePixel = 0
 Main.Active = true
-Main.Visible = false
+Main.Visible = true -- แสดงผล UI ทันที 100% เมื่อรันสคิปต์บนมือถือ Delta
 Main.ClipsDescendants = true
 Main.Parent = ScreenGui
 
@@ -1974,10 +1924,12 @@ FloatingToggle.Name = "FloatingToggle"
 FloatingToggle.Size = UDim2.new(0, 38, 0, 38)
 FloatingToggle.Position = UDim2.new(0.02, 0, 0.22, 0)
 FloatingToggle.BackgroundColor3 = Color3.fromRGB(22, 17, 36)
+FloatingToggle.BackgroundTransparency = 0.45
 FloatingToggle.BorderSizePixel = 0
 FloatingToggle.Font = Enum.Font.GothamBold
 FloatingToggle.Text = "⚡"
 FloatingToggle.TextColor3 = Color3.fromRGB(255, 205, 75)
+FloatingToggle.TextTransparency = 0.3
 FloatingToggle.TextSize = 18
 FloatingToggle.AutoButtonColor = false
 FloatingToggle.ZIndex = 99999
@@ -1991,6 +1943,7 @@ ftCorner.Parent = FloatingToggle
 local ftStroke = Instance.new("UIStroke")
 ftStroke.Thickness = 1.6
 ftStroke.Color = Color3.fromRGB(165, 85, 255)
+ftStroke.Transparency = 0.45
 ftStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 ftStroke.Parent = FloatingToggle
 
