@@ -3,6 +3,10 @@
 -- //   Reversed & Authored by cook45                          // --
 -- // ======================================================== // --
 
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -11,8 +15,9 @@ local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local CoreGui = game:GetService("CoreGui")
 
-local LocalPlayer = Players.LocalPlayer
-local guiParent = (gethui and gethui()) or CoreGui:FindFirstChild("RobloxGui") or CoreGui or LocalPlayer:WaitForChild("PlayerGui")
+local LocalPlayer = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+local pgui = LocalPlayer:WaitForChild("PlayerGui")
+local guiParent = pgui
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local PlayerCharacter = Remotes:WaitForChild("PlayerCharacter")
 
@@ -29,40 +34,35 @@ getgenv().DG_AutoParry = nil
 getgenv().BossBot = nil
 getgenv().JackCombat = nil
 
-if guiParent:FindFirstChild("fAstHub_DG") then guiParent.fAstHub_DG:Destroy() end
-if guiParent:FindFirstChild("fAstToastGui") then guiParent.fAstToastGui:Destroy() end
+pcall(function()
+    if gethui and gethui():FindFirstChild("fAstHub_DG") then gethui().fAstHub_DG:Destroy() end
+    if CoreGui:FindFirstChild("fAstHub_DG") then CoreGui.fAstHub_DG:Destroy() end
+    if pgui:FindFirstChild("fAstHub_DG") then pgui.fAstHub_DG:Destroy() end
+    if gethui and gethui():FindFirstChild("fAstToastGui") then gethui().fAstToastGui:Destroy() end
+    if CoreGui:FindFirstChild("fAstToastGui") then CoreGui.fAstToastGui:Destroy() end
+    if pgui:FindFirstChild("fAstToastGui") then pgui.fAstToastGui:Destroy() end
+end)
 
--- 2. ระบบ Auto-Run อัตโนมัติเมื่อย้ายห้อง / วาร์ปเข้าห้องดวล (Queue On Teleport)
+-- 2. ระบบ Auto-Run อัตโนมัติเมื่อย้ายห้อง / วาร์ปเข้าห้องดวล / เข้าเล่นแรงค์ (Queue On Teleport)
 local queue_on_teleport = (syn and syn.queue_on_teleport) or queue_on_teleport or (fluxus and fluxus.queue_on_teleport)
+local teleportScript = [[
+    repeat task.wait() until game:IsLoaded()
+    task.wait(1.5)
+    if isfile and isfile("fAstHub_DG.lua") then
+        loadstring(readfile("fAstHub_DG.lua"))()
+    elseif isfile and isfile("fAstHub_AutoExec.lua") then
+        loadstring(readfile("fAstHub_AutoExec.lua"))()
+    end
+]]
 if queue_on_teleport and not getgenv()._fAstTeleportHooked then
     getgenv()._fAstTeleportHooked = true
-    pcall(function()
-        queue_on_teleport([[
-            task.wait(1.5)
-            if isfile and isfile("fAstHub_DG.lua") then
-                loadstring(readfile("fAstHub_DG.lua"))()
-            end
-        ]])
-    end)
+    pcall(function() queue_on_teleport(teleportScript) end)
     LocalPlayer.OnTeleport:Connect(function(state)
         if state == Enum.TeleportState.Started then
-            pcall(function()
-                queue_on_teleport([[
-                    task.wait(1.5)
-                    if isfile and isfile("fAstHub_DG.lua") then
-                        loadstring(readfile("fAstHub_DG.lua"))()
-                    end
-                ]])
-            end)
+            pcall(function() queue_on_teleport(teleportScript) end)
         end
     end)
 end
-
-pcall(function()
-    if writefile then
-        writefile("fAstHub_DG.lua", readfile and readfile("fAstHub_DG.lua") or "")
-    end
-end)
 
 -- 3. ฟังก์ชันออริจินัลแท้ๆ จาก BaseActionManager (ไม่ซ้อน Hook)
 local BaseActionManager = require(ReplicatedStorage.Modules.BaseActionManager)
@@ -1066,12 +1066,9 @@ end)
 
 -- // 8. MODERN CYBER-AESTHETIC GLASS UI (fAst Hub) // --
 pcall(function()
-    if guiParent:FindFirstChild("fAstHub_DG") then
-        guiParent.fAstHub_DG:Destroy()
-    end
-    if LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("fAstHub_DG") then
-        LocalPlayer.PlayerGui.fAstHub_DG:Destroy()
-    end
+    if gethui and gethui():FindFirstChild("fAstHub_DG") then gethui().fAstHub_DG:Destroy() end
+    if CoreGui:FindFirstChild("fAstHub_DG") then CoreGui.fAstHub_DG:Destroy() end
+    if pgui:FindFirstChild("fAstHub_DG") then pgui.fAstHub_DG:Destroy() end
 end)
 
 local ScreenGui = Instance.new("ScreenGui")
@@ -1149,12 +1146,14 @@ Title.TextSize = 16
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = TopBar
 
-local KeyChip = Instance.new("Frame")
+local KeyChip = Instance.new("TextButton")
 KeyChip.Name = "KeyChip"
 KeyChip.Size = UDim2.new(0, 86, 0, 20)
 KeyChip.Position = UDim2.new(0, 95, 0.5, -10)
 KeyChip.BackgroundColor3 = Color3.fromRGB(20, 17, 30)
 KeyChip.BorderSizePixel = 0
+KeyChip.Text = ""
+KeyChip.ZIndex = 20
 KeyChip.Parent = TopBar
 
 local ChipCorner = Instance.new("UICorner")
@@ -1173,6 +1172,7 @@ ChipText.Font = Enum.Font.GothamMedium
 ChipText.Text = "[" .. (getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl") .. "]"
 ChipText.TextColor3 = Color3.fromRGB(170, 140, 240)
 ChipText.TextSize = 10.5
+ChipText.ZIndex = 21
 ChipText.Parent = KeyChip
 
 local CloseBtn = Instance.new("TextButton")
@@ -1185,6 +1185,8 @@ CloseBtn.Font = Enum.Font.GothamBold
 CloseBtn.Text = "X"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 110, 110)
 CloseBtn.TextSize = 13
+CloseBtn.ZIndex = 25
+CloseBtn.Active = true
 CloseBtn.Parent = TopBar
 
 local CloseCorner = Instance.new("UICorner")
@@ -1198,10 +1200,21 @@ CloseBtn.MouseLeave:Connect(function()
     TweenService:Create(CloseBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(36, 30, 52), TextColor3 = Color3.fromRGB(255, 110, 110)}):Play()
 end)
 
--- Dragging System
+-- Dragging System (ไม่ลากหากคลิกโดนปุ่ม CloseBtn หรือ KeyChip)
 local dragging, dragInput, dragStart, startPos
 TopBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        local mPos = input.Position
+        local cPos = CloseBtn.AbsolutePosition
+        local cSize = CloseBtn.AbsoluteSize
+        if mPos.X >= cPos.X and mPos.X <= cPos.X + cSize.X and mPos.Y >= cPos.Y and mPos.Y <= cPos.Y + cSize.Y then
+            return
+        end
+        local kPos = KeyChip.AbsolutePosition
+        local kSize = KeyChip.AbsoluteSize
+        if mPos.X >= kPos.X and mPos.X <= kPos.X + kSize.X and mPos.Y >= kPos.Y and mPos.Y <= kPos.Y + kSize.Y then
+            return
+        end
         dragging = true
         dragStart = input.Position
         startPos = Main.Position
@@ -1847,30 +1860,45 @@ local function ToggleVisibility()
     end
 end
 
-FloatingPill.MouseButton1Click:Connect(function()
-    ToggleVisibility()
-end)
-
-CloseBtn.MouseButton1Click:Connect(function()
+local function CloseMenu()
     Main.Visible = false
     FloatingPill.Visible = true
     ToggleDropdown(true)
     local kName = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind and getgenv().fAstConfig.MenuKeybind.Name or "RightControl"
     ShowHUDToast("ปิดเมนูแล้ว (กด [" .. kName .. "] หรือคลิกปุ่มลอย ⚡ เพื่อเปิด)", Color3.fromRGB(170, 90, 255))
-end)
+end
+
+CloseBtn.MouseButton1Down:Connect(CloseMenu)
+CloseBtn.Activated:Connect(CloseMenu)
+CloseBtn.MouseButton1Click:Connect(CloseMenu)
+
+KeyChip.MouseButton1Down:Connect(ToggleVisibility)
+KeyChip.Activated:Connect(ToggleVisibility)
+KeyChip.MouseButton1Click:Connect(ToggleVisibility)
+
+FloatingPill.MouseButton1Down:Connect(ToggleVisibility)
+FloatingPill.Activated:Connect(ToggleVisibility)
+FloatingPill.MouseButton1Click:Connect(ToggleVisibility)
 
 -- Keybind Listeners
+if getgenv()._fAstInputConn then
+    pcall(function() getgenv()._fAstInputConn:Disconnect() end)
+    getgenv()._fAstInputConn = nil
+end
 getgenv()._fAstInputConn = UserInputService.InputBegan:Connect(function(input, processed)
-    -- เปิด/ปิดเมนูได้ 100% ตลอดเวลา ตามปุ่มที่ตั้งไว้ (หรือ RightControl/Insert/RightAlt เป็นปุ่มสำรอง)
+    -- เปิด/ปิดเมนูได้ 100% ตลอดเวลา ตามปุ่มที่ตั้งไว้ (หรือ RightControl / Insert / RightAlt เป็นปุ่มสำรอง)
     local targetMenuKey = getgenv().fAstConfig and getgenv().fAstConfig.MenuKeybind or Enum.KeyCode.RightControl
-    if input.KeyCode == targetMenuKey or input.KeyCode == Enum.KeyCode.RightControl or input.KeyCode == Enum.KeyCode.Insert or input.KeyCode == Enum.KeyCode.RightAlt then
+    if input.KeyCode == targetMenuKey 
+       or input.KeyCode == Enum.KeyCode.RightControl 
+       or input.KeyCode == Enum.KeyCode.Insert 
+       or input.KeyCode == Enum.KeyCode.RightAlt then
         ToggleVisibility()
         return
     end
 
     if processed then return end
 
-    if input.KeyCode == getgenv().fAstConfig.ParryKeybind then
+    if input.KeyCode == (getgenv().fAstConfig and getgenv().fAstConfig.ParryKeybind) then
         SetParryState(not getgenv().fAstConfig.AutoParry)
         local statusText = getgenv().fAstConfig.AutoParry and "AUTO PARRY: ON" or "AUTO PARRY: OFF"
         local statusColor = getgenv().fAstConfig.AutoParry and Color3.fromRGB(50, 255, 120) or Color3.fromRGB(255, 70, 70)
