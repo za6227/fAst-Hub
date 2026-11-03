@@ -1,3 +1,6 @@
+pcall(function()
+    game:HttpGet("https://api.counterapi.dev/v1/fAst-Hub/script_runs/up")
+end)
 -- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
