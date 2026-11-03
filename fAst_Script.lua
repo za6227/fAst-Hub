@@ -1,6 +1,4 @@
-pcall(function()
-    game:HttpGet("https://api.counterapi.dev/v1/fAst-Hub/script_runs/up")
-end)
+pcall(function() game:HttpGet("https://api.counterapi.dev/v1/fAst-Hub/script_runs/up") end)
 -- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
@@ -108,11 +106,11 @@ end
 
 getgenv().fAstConfig = {
     MenuKeybind = oldCfg.MenuKeybind or (savedCfg.MenuKeyName and Enum.KeyCode[savedCfg.MenuKeyName]) or Enum.KeyCode.RightControl,
-    AutoParry = false, -- ค่าเริ่มต้นคือ OFF ทั้งหมด จนกว่าผู้เล่นจะเปิดเอง
+    AutoParry = pickBool(oldCfg.AutoParry, savedCfg.AutoParry, true),
     ParryKeybind = oldCfg.ParryKeybind or (savedCfg.ParryKeyName and Enum.KeyCode[savedCfg.ParryKeyName]) or Enum.KeyCode.V,
-    AutoBoss = false, -- ค่าเริ่มต้นคือ OFF ทั้งหมด จนกว่าผู้เล่นจะเปิดเอง
-    AutoReturnLobby = false, -- ค่าเริ่มต้นคือ OFF ทั้งหมด จนกว่าผู้เล่นจะเปิดเอง
-    AutoClaimRewards = false, -- ค่าเริ่มต้นคือ OFF ทั้งหมด จนกว่าผู้เล่นจะเปิดเอง
+    AutoBoss = pickBool(oldCfg.AutoBoss, savedCfg.AutoBoss, true),
+    AutoReturnLobby = pickBool(oldCfg.AutoReturnLobby, savedCfg.AutoReturnLobby, true),
+    AutoClaimRewards = pickBool(oldCfg.AutoClaimRewards, savedCfg.AutoClaimRewards, false),
     SelectedBoss = oldCfg.SelectedBoss or savedCfg.SelectedBoss or "Jack",
     SelectedBossId = oldCfg.SelectedBossId or savedCfg.SelectedBossId or "Jack"
 }
@@ -274,10 +272,7 @@ local function IsBossAlive(model)
         return false
     end
 
-    -- บอสติดสถานะตาย / จบการต่อสู้ / ห้ามโจมตี (หยุดตีทันที 100%)
-    if model:GetAttribute("IsUntargetable") == true then
-        return false
-    end
+    -- บอสติดสถานะตาย / จบการต่อสู้ (หยุดตีทันที 100%)
     if model:GetAttribute("Dead") == true or model:GetAttribute("IsDead") == true then
         return false
     end
@@ -337,13 +332,14 @@ local function IsCombatOpponent(model)
         return false
     end
 
+    if Players:GetPlayerFromCharacter(model) ~= nil then
+        return false
+    end
+
     if model:GetAttribute("MiniBossKit") ~= nil or string.find(model.Name, "^MiniBoss_") then
         return true
     end
     if model:GetAttribute("NPCBehavior") ~= nil or model:GetAttribute("NPCDisplayName") ~= nil then
-        return true
-    end
-    if model:GetAttribute("InCombat") == true or modelMatch ~= nil or (myGroup ~= nil and modelGroup == myGroup) then
         return true
     end
     return false
@@ -791,9 +787,6 @@ local function ReleaseCameraLock()
                     pcall(function() handler.ActionManager:CancelCurrentAction() end)
                 end
             end
-            if handler.PhysicsComponent and handler.PhysicsComponent.RootCollider then
-                handler.PhysicsComponent.RootCollider.CanCollide = true
-            end
         end
         local cam = workspace.CurrentCamera
         local hum = GetActualPlayerHumanoid()
@@ -801,16 +794,9 @@ local function ReleaseCameraLock()
             if hum and (cam.CameraSubject ~= hum or not cam.CameraSubject.Parent or not cam.CameraSubject:IsDescendantOf(workspace)) then
                 cam.CameraSubject = hum
             end
-            cam.CameraType = Enum.CameraType.Custom
-            pcall(function()
-                local playerModule = LocalPlayer:FindFirstChild("PlayerScripts") and LocalPlayer.PlayerScripts:FindFirstChild("PlayerModule")
-                if playerModule then
-                    local cameras = require(playerModule).cameras
-                    if cameras and cameras.activeCameraController then
-                        cameras.activeCameraController.resetCameraAngle = true
-                    end
-                end
-            end)
+            if cam.CameraType ~= Enum.CameraType.Custom then
+                cam.CameraType = Enum.CameraType.Custom
+            end
         end
     end)
 end
@@ -825,7 +811,9 @@ getgenv()._fAstCamWatchdog = RunService.RenderStepped:Connect(function()
         local hum = GetActualPlayerHumanoid()
         if hum then
             cam.CameraSubject = hum
-            cam.CameraType = Enum.CameraType.Custom
+            if cam.CameraType ~= Enum.CameraType.Custom then
+                cam.CameraType = Enum.CameraType.Custom
+            end
         end
     end
 end)
@@ -856,12 +844,9 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     if not myRoot or not myHum or myHum.Health <= 0 then return end
     local am = handler.ActionManager
 
-    -- ตรวจสอบว่าอยู่ใน Lobby, Event Hub หรือ SafeZone หรือไม่ (ห้ามโจมตีเด็ดขาด)
+    -- ตรวจสอบว่าอยู่ใน SafeZone หรืออยู่นอกสนามต่อสู้หรือไม่ (หากยืนอยู่ในโซนปลอดภัยและไม่ได้ต่อสู้ ให้หยุดลูป)
     local char = LocalPlayer.Character or workspace:FindFirstChild("Player") or workspace:FindFirstChild("Player_Client")
-    local inSafe = (char and char:GetAttribute("InSafeZone") == true)
-        or (workspace:FindFirstChild("HalloweenEventHubMap") ~= nil)
-        or (workspace:FindFirstChild("LobbyMap") ~= nil)
-        or (game.PlaceId == 105077286193224)
+    local inSafe = char and (char:GetAttribute("InSafeZone") == true) and (char:GetAttribute("InCombat") ~= true)
 
     if inSafe then
         handler._desiredQueuedAction = nil
@@ -951,11 +936,8 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
 
     hadBossFighting = true
 
-    -- ปิด CanCollide ของ RootCollider และ RemoteCollider ของบอสชั่วคราวเพื่อไม่ให้ฟิสิกส์ดีดตัวเราออกห่างจากบอสเกินระยะโจมตี
+    -- ปิด CanCollide ของ RemoteCollider ของบอสชั่วคราวเพื่อไม่ให้ตัวบอสดีดเราถอยหลัง
     pcall(function()
-        if handler.PhysicsComponent and handler.PhysicsComponent.RootCollider then
-            handler.PhysicsComponent.RootCollider.CanCollide = false
-        end
         local bHandler = CharacterController:GetCharacterHandler(targetBoss)
         if bHandler and bHandler.RemoteCollider then
             bHandler.RemoteCollider.CanCollide = false
@@ -1043,8 +1025,8 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         PlayerInputController.CurrentInput.MoveDirection = moveDir
     end
 
-    -- [C] ระบบโจมตีอัตโนมัติแม่นยำ 100% (ตีทันทีเมื่ออยู่ในระยะ <= 8.5 studs หรือซิงค์ตำแหน่งแล้ว)
-    local readyToStrike = (dist <= 8.5) or (isSim and snappedFrames >= 1)
+    -- [C] ระบบโจมตีอัตโนมัติแม่นยำ 100% (ตีทันทีเมื่ออยู่ในระยะ <= 12 studs หรือซิงค์ตำแหน่งแล้ว)
+    local readyToStrike = (dist <= 12) or (isSim and snappedFrames >= 1)
 
     if not IsBossAlive(targetBoss) then
         handler._desiredQueuedAction = nil
@@ -1843,11 +1825,24 @@ RewardsSwitch.MouseButton1Click:Connect(function()
     ShowHUDToast(txt, col)
 end)
 
--- ตั้งค่าสถานะเริ่มต้นของสวิตช์ให้เป็น OFF ทั้งหมด 100% จนกว่าจะเปิดเอง
-SetParryState(false)
-SetBossFightState(false)
-SetReturnLobbyState(false)
-SetClaimRewardsState(false)
+-- คืนค่าสถานะสวิตช์และระบบตามที่บันทึกไว้ใน config (จดจำฟังก์ชันที่เปิดไว้ 100%)
+SetParrySwitchState(getgenv().fAstConfig.AutoParry)
+SetBossSwitchState(getgenv().fAstConfig.AutoBoss)
+SetReturnSwitchState(getgenv().fAstConfig.AutoReturnLobby)
+SetRewardsSwitchState(getgenv().fAstConfig.AutoClaimRewards)
+
+-- หากฟังก์ชันไหนเปิดค้างไว้ ให้เริ่มทำงานทันที
+if getgenv().fAstConfig.AutoBoss then
+    task.spawn(function()
+        task.wait(1.0)
+        if getgenv().fAstConfig and getgenv().fAstConfig.AutoBoss and not IsInActiveFight() then
+            StartBossFightNow()
+        end
+    end)
+end
+if getgenv().fAstConfig.AutoClaimRewards then
+    ClaimAllRewards(true)
+end
 
 -- Floating Quick Toggle Pill (ปิดการแสดงผลตามที่ผู้ใช้สั่ง เพื่อไม่ให้ปุ่ม ⚡ fAst Hub บังหน้าจอ)
 local FloatingPill = Instance.new("TextButton")
