@@ -218,11 +218,11 @@ end
 
 getgenv().fAstConfig = {
     MenuKeybind = oldCfg.MenuKeybind or (savedCfg.MenuKeyName and Enum.KeyCode[savedCfg.MenuKeyName]) or Enum.KeyCode.RightControl,
-    AutoParry = pickBool(oldCfg.AutoParry, savedCfg.AutoParry, true),
+    AutoParry = pickBool(oldCfg.AutoParry, savedCfg.AutoParry, false),
     ParryKeybind = oldCfg.ParryKeybind or (savedCfg.ParryKeyName and Enum.KeyCode[savedCfg.ParryKeyName]) or Enum.KeyCode.V,
-    AutoBoss = pickBool(oldCfg.AutoBoss, savedCfg.AutoBoss, true),
+    AutoBoss = pickBool(oldCfg.AutoBoss, savedCfg.AutoBoss, false),
     AutoRanked = pickBool(oldCfg.AutoRanked, savedCfg.AutoRanked, false),
-    AutoReturnLobby = pickBool(oldCfg.AutoReturnLobby, savedCfg.AutoReturnLobby, true),
+    AutoReturnLobby = pickBool(oldCfg.AutoReturnLobby, savedCfg.AutoReturnLobby, false),
     AutoClaimRewards = pickBool(oldCfg.AutoClaimRewards, savedCfg.AutoClaimRewards, false),
     SelectedBoss = oldCfg.SelectedBoss or savedCfg.SelectedBoss or "The Headless Shogun",
     SelectedBossId = oldCfg.SelectedBossId or savedCfg.SelectedBossId or "Shogun",
