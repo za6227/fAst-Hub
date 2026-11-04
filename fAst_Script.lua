@@ -495,14 +495,25 @@ local function HardStopAllAttacks(handler, am)
     end)
 end
 
--- [ตรวจสอบว่าผู้เล่นอยู่ใน Lobby / Hub หรืออยู่นอกสนามประลองหรือไม่]
+-- [ตรวจสอบว่าผู้เล่นอยู่ใน Lobby / Hub หรืออยู่นอกสนามประลองหรือไม่ พร้อม Cache ลดภาระ CPU]
+local cachedIsInLobby = false
+local lastLobbyCheckTime = 0
 local function IsInLobby()
+    if tick() - lastLobbyCheckTime < 0.25 then
+        return cachedIsInLobby
+    end
+    lastLobbyCheckTime = tick()
+
     local myRoot = GetMyRoot()
-    if not myRoot then return true end
+    if not myRoot then
+        cachedIsInLobby = true
+        return true
+    end
 
     -- 1. พิกัด Lobby ฮาโลวีน (X > 0 และ Z > -15000 โดยทั่วไปอยู่ที่ X ~ 2725, Z ~ -10797)
     if myRoot.Position.X > 0 and myRoot.Position.Z > -15000 then
         if workspace:FindFirstChild("HalloweenEventHubMap") or workspace:FindFirstChild("LobbyMap") then
+            cachedIsInLobby = true
             return true
         end
     end
@@ -511,6 +522,7 @@ local function IsInLobby()
     if workspace:FindFirstChild("LobbyMap") and not workspace:FindFirstChild("HalloweenEventHubMap") then
         local lm = workspace.LobbyMap
         if myRoot:IsDescendantOf(lm) or (myRoot.Position.Y > 200) then
+            cachedIsInLobby = true
             return true
         end
     end
@@ -519,15 +531,20 @@ local function IsInLobby()
     local pgui = LocalPlayer:FindFirstChild("PlayerGui")
     if pgui then
         local rGui = pgui:FindFirstChild("MiniBossResultsGui")
-        if rGui and rGui.Enabled then return true end
+        if rGui and rGui.Enabled then
+            cachedIsInLobby = true
+            return true
+        end
     end
 
     -- 4. อยู่ใน SafeZone
     local char = LocalPlayer.Character
     if char and (char:GetAttribute("InSafeZone") == true) then
+        cachedIsInLobby = true
         return true
     end
 
+    cachedIsInLobby = false
     return false
 end
 
@@ -627,8 +644,24 @@ local function IsCombatOpponent(model)
     return false
 end
 
+local cachedBossTarget = nil
+local lastBossScanTime = 0
 local function FindBossTarget(chosenBoss)
-    if IsInLobby() then return nil end
+    if IsInLobby() then
+        cachedBossTarget = nil
+        return nil
+    end
+
+    -- คืนค่าเป้าหมายเดิมทันทีถ้าบอสยังไม่ตาย เพื่อป้องกัน GC lag จากการวนลูปค้นหาทุกเฟรม
+    if cachedBossTarget and IsBossAlive(cachedBossTarget) then
+        return cachedBossTarget
+    end
+
+    if tick() - lastBossScanTime < 0.25 and cachedBossTarget and IsBossAlive(cachedBossTarget) then
+        return cachedBossTarget
+    end
+    lastBossScanTime = tick()
+
     local myRoot = GetMyRoot()
     if not myRoot then return nil end
     local char = LocalPlayer.Character
@@ -656,14 +689,14 @@ local function FindBossTarget(chosenBoss)
 
     local matchDir = workspace:FindFirstChild("MatchDirectory")
     if matchDir then
-        for _, obj in ipairs(matchDir:GetDescendants()) do
+        for _, obj in ipairs(matchDir:GetChildren()) do
             evaluateModel(obj)
         end
     end
 
     local arenas = workspace:FindFirstChild("Arenas")
     if arenas then
-        for _, obj in ipairs(arenas:GetDescendants()) do
+        for _, obj in ipairs(arenas:GetChildren()) do
             evaluateModel(obj)
         end
     end
@@ -678,7 +711,10 @@ local function FindBossTarget(chosenBoss)
         end)
     end
 
-    if #candidates == 0 then return nil end
+    if #candidates == 0 then
+        cachedBossTarget = nil
+        return nil
+    end
 
     -- ถ้าตรงกับบอสที่เลือก ให้เลือกตัวนั้นก่อน (รองรับ The Headless Shogun, Jack, Silene, Benkei, Nephra & Ammut, Tremor)
     if chosenBoss and chosenBoss ~= "Auto (Any)" and chosenBoss ~= "Any" then
@@ -694,6 +730,7 @@ local function FindBossTarget(chosenBoss)
                or string.find(titleLower, cLower)
                or (string.find(cLower, "shogun") and (string.find(nLower, "shogun") or string.find(kitLower, "shogun") or string.find(dispLower, "shogun")))
                or (chosenBoss == "Nephra & Ammut" and (string.find(nLower, "nephra") or string.find(nLower, "ammut"))) then
+                cachedBossTarget = m
                 return m
             end
         end
@@ -708,7 +745,8 @@ local function FindBossTarget(chosenBoss)
         end
         return false
     end)
-    return candidates[1]
+    cachedBossTarget = candidates[1]
+    return cachedBossTarget
 end
 
 -- ค้นหาศัตรูเป้าหมาย (รองรับทั้งบอสและคู่ต่อสู้ในสนามประลอง Ranked 1v1)
@@ -1249,6 +1287,7 @@ end)
 -- // 8. AUTO BOSS SMART COMBAT ENGINE (ตีตรงจังหวะ ไม่ตีมั่ว หันหาบอสเฉพาะตอนสู้) // --
 local lastAttackTime = 0
 local lastEquipTime = 0
+local lastCFrameSyncTime = 0
 local snappedFrames = 0
 local hadBossFighting = false
 
@@ -1295,22 +1334,11 @@ local function ReleaseCameraLock()
     end)
 end
 
--- Watchdog ป้องกันมุมกล้องหลุดส่องพื้นหรือค้างในช่องว่างเมื่อสลับแผนที่/ปิดบอท
-if getgenv()._fAstCamWatchdog then pcall(function() getgenv()._fAstCamWatchdog:Disconnect() end) end
-getgenv()._fAstCamWatchdog = RunService.RenderStepped:Connect(function()
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-    local cs = cam.CameraSubject
-    if not cs or not cs.Parent or not cs:IsDescendantOf(workspace) then
-        local hum = GetActualPlayerHumanoid()
-        if hum then
-            cam.CameraSubject = hum
-            if cam.CameraType ~= Enum.CameraType.Custom then
-                cam.CameraType = Enum.CameraType.Custom
-            end
-        end
-    end
-end)
+-- ล้าง Watchdog เก่าที่ผูกกับ RenderStepped เพื่อไม่ให้กิน FPS
+if getgenv()._fAstCamWatchdog then
+    pcall(function() getgenv()._fAstCamWatchdog:Disconnect() end)
+    getgenv()._fAstCamWatchdog = nil
+end
 
 getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoBoss then
@@ -1462,32 +1490,25 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
         end
     end)
 
-    -- [B] ระบบซิงค์ฟิสิกส์ Client-Server (แก้ปัญหาตัวละครฟันลมอยู่กับที่)
+    -- [B] ระบบซิงค์ฟิสิกส์ Client-Server (แก้ปัญหาตัวละครฟันลมอยู่กับที่ พร้อมคุมความถี่ส่ง Remote ไม่ให้ท่วมเครือข่าย)
     local isSim = handler.PhysicsComponent and handler.PhysicsComponent.IsPhysicsSimulated
+    myRoot.CFrame = targetCF
+    myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    handler._serverRootCFrame = targetCF
+    handler._interpolationResultCFrame = targetCF
+    handler._bulkMoveCFrame = targetCF
     if isSim then
-        myRoot.CFrame = targetCF
-        myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-        handler._serverRootCFrame = targetCF
-        handler._interpolationResultCFrame = targetCF
-        handler._bulkMoveCFrame = targetCF
         snappedFrames = snappedFrames + 1
+    else
+        snappedFrames = 0
+    end
+
+    if tick() - lastCFrameSyncTime > 0.15 then
+        lastCFrameSyncTime = tick()
         pcall(function()
             PlayerCharacter.Request.UpdateCharacterCFrame:FireServer(targetCF)
             PlayerCharacter.Request.SetDesiredLookDirection:FireServer(unit, 999)
         end)
-    else
-        snappedFrames = 0
-        if dist <= 350 then
-            myRoot.CFrame = targetCF
-            myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-            handler._serverRootCFrame = targetCF
-            handler._interpolationResultCFrame = targetCF
-            handler._bulkMoveCFrame = targetCF
-            pcall(function()
-                PlayerCharacter.Request.UpdateCharacterCFrame:FireServer(targetCF)
-                PlayerCharacter.Request.SetDesiredLookDirection:FireServer(unit, 999)
-            end)
-        end
     end
 
     if handler.PhysicsComponent and handler.PhysicsComponent.AlignOrientation then
