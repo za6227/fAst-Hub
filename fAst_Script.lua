@@ -1,10 +1,31 @@
--- ================= [ ระบบ Heartbeat เช็คคนออนไลน์ ] =================
+-- ================= [ ระบบ Heartbeat ตรวจจับผู้ใช้ ] =================
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
-local HEARTBEAT_URL = "https://heartbeat-server-h5r4.onrender.com/api/heartbeat"
+local SERVER_URL = "https://heartbeat-server-h5r4.onrender.com/api/heartbeat"
 local INTERVAL = 30 -- ส่งสัญญาณทุก 30 วินาที
+
+-- เช็คอุปกรณ์
+local function getDevice()
+    if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+        return "Mobile"
+    elseif UserInputService.GamepadEnabled and not UserInputService.KeyboardEnabled then
+        return "Console"
+    else
+        return "PC"
+    end
+end
+
+-- เช็คตัวรัน
+local function getExecutor()
+    local identify = identifyexecutor or getexecutorname
+    if identify then
+        return tostring(identify())
+    end
+    return "Unknown"
+end
 
 local sessionId = HttpService:GenerateGUID(false)
 local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
@@ -12,19 +33,21 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 local function sendPing()
     if not httpRequest then return end
 
+    local execName = getExecutor()
     local payload = {
         sessionId = sessionId,
         userId = player.UserId,
-        username = player.Name
+        username = player.Name,
+        device = getDevice(),
+        executor = execName,
+        isDelta = (string.find(string.lower(execName), "delta") ~= nil)
     }
 
     pcall(function()
         httpRequest({
-            Url = HEARTBEAT_URL,
+            Url = SERVER_URL,
             Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json"
-            },
+            Headers = {["Content-Type"] = "application/json"},
             Body = HttpService:JSONEncode(payload)
         })
     end)
@@ -33,7 +56,7 @@ end
 -- ส่ง Ping ครั้งแรกทันที
 task.spawn(sendPing)
 
--- วนลูปส่งต่อเนื่องในพื้นหลัง
+-- วนลูปส่งต่อเนื่อง
 task.spawn(function()
     while true do
         task.wait(INTERVAL)
@@ -42,7 +65,7 @@ task.spawn(function()
 end)
 -- ==============================================================
 
--- [โค้ดสคริปต์หลักเดิมของคุณต่อจากตรงนี้]
+-- [วางโค้ดหลักของคุณต่อจากตรงนี้ได้เลย]
 -- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
