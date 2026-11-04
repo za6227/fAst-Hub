@@ -954,8 +954,8 @@ local function ApplyCleanHook(char)
                 end
             end
 
-            local isRankedCombat = (getgenv().fAstConfig and getgenv().fAstConfig.AutoRanked) or IsInDuelPlace()
-            if isRankedCombat then
+            local inDuel = IsInDuelPlace()
+            if inDuel then
                 isFromPlayer = true
                 isFromBoss = false
             end
@@ -1032,8 +1032,9 @@ local function ApplyCleanHook(char)
                 return res
             end
 
-            -- 2. ถ้าเป็นการเล่นใน PVP ทั่วไป (AutoParry) หรือ AutoRanked
-            if not (getgenv().fAstConfig and (getgenv().fAstConfig.AutoParry or isRankedCombat)) then
+            -- 2. ถ้าเป็นการเล่นใน PVP / Ranked: ต้องเปิด AutoParry หรือ AutoRanked เท่านั้น ถึงจะบล็อค/แพรี่ให้
+            local isPvpDefenseActive = getgenv().fAstConfig and (getgenv().fAstConfig.AutoParry or getgenv().fAstConfig.AutoRanked)
+            if not isPvpDefenseActive then
                 return CleanOriginalCompute(self, impactData)
             end
 
@@ -1665,8 +1666,17 @@ local function GetActiveRankedMatch()
     return mc and mc.ActiveLocalPlayerMatch
 end
 
+local cachedRankedChar = nil
+local cachedRankedRoot = nil
 local function GetRankedEnemy(match, myTeam)
     if not match or not myTeam then return nil, nil end
+    if cachedRankedChar and cachedRankedRoot and cachedRankedChar.Parent and cachedRankedChar:GetAttribute("IsDead") ~= true then
+        local hum = cachedRankedChar:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 then
+            return cachedRankedChar, cachedRankedRoot
+        end
+    end
+
     local living = match:GetLivingEnemyCombatants(myTeam)
     if living and #living > 0 then
         for _, c in ipairs(living) do
@@ -1688,6 +1698,8 @@ local function GetRankedEnemy(match, myTeam)
             if char and root and char:GetAttribute("IsDead") ~= true then
                 local hum = char:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 then
+                    cachedRankedChar = char
+                    cachedRankedRoot = root
                     return char, root
                 end
             end
@@ -1702,6 +1714,8 @@ local function GetRankedEnemy(match, myTeam)
             if root and hum and hum.Health > 0 and char:GetAttribute("IsDead") ~= true then
                 local mc = GameManager:GetController("MatchController")
                 if mc and mc:IsCharacterEnemyOfLocalPlayer(char) then
+                    cachedRankedChar = char
+                    cachedRankedRoot = root
                     return char, root
                 end
             end
@@ -1713,21 +1727,36 @@ local function GetRankedEnemy(match, myTeam)
             local root = m:FindFirstChild("HumanoidRootPart")
             local hum = m:FindFirstChildOfClass("Humanoid")
             if root and hum and hum.Health > 0 and m:GetAttribute("IsDead") ~= true then
+                cachedRankedChar = m
+                cachedRankedRoot = root
                 return m, root
             end
         end
     end
+    cachedRankedChar = nil
+    cachedRankedRoot = nil
     return nil, nil
 end
 
 local isCurrentlyInQueue = false
+local cachedDuelPlace = nil
+local lastDuelPlaceCheck = 0
 function IsInDuelPlace()
-    if game.PlaceId == 100484168444874 then return true end
+    if tick() - lastDuelPlaceCheck < 1.0 and cachedDuelPlace ~= nil then
+        return cachedDuelPlace
+    end
+    lastDuelPlaceCheck = tick()
+    if game.PlaceId == 100484168444874 then
+        cachedDuelPlace = true
+        return true
+    end
     if workspace:FindFirstChild("Arena") or workspace:FindFirstChild("ArenaMap") or workspace:FindFirstChild("DuelMap") then
         if not workspace:FindFirstChild("HalloweenEventHubMap") and not workspace:FindFirstChild("LobbyMap") then
+            cachedDuelPlace = true
             return true
         end
     end
+    cachedDuelPlace = false
     return false
 end
 
@@ -1938,7 +1967,6 @@ getgenv()._RankedCombatLoop = RunService.Heartbeat:Connect(function()
                 tlc:SetTarget(enemyRoot)
             end
         end
-        workspace.CurrentCamera.CFrame = CFrame.lookAt(workspace.CurrentCamera.CFrame.Position, ePos)
     end)
 
     -- 2. ระบบป้องกันตัวละครลอย / ปีนหัวศัตรู (Anti-Float & Ground Clamping)
