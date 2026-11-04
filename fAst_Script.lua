@@ -127,11 +127,13 @@ local qot = (syn and syn.queue_on_teleport)
     or (getgenv and getgenv().queue_on_teleport)
 local teleportScript = [[
     repeat task.wait() until game:IsLoaded()
-    task.wait(1.2)
-    if isfile and isfile("fAstHub_DG.lua") then
-        loadstring(readfile("fAstHub_DG.lua"))()
-    elseif isfile and isfile("fAstHub_AutoExec.lua") then
-        loadstring(readfile("fAstHub_AutoExec.lua"))()
+    task.wait(1.5)
+    if not getgenv()._fAstRunToken then
+        if isfile and isfile("fAstHub_DG.lua") then
+            loadstring(readfile("fAstHub_DG.lua"))()
+        elseif isfile and isfile("fAstHub_AutoExec.lua") then
+            loadstring(readfile("fAstHub_AutoExec.lua"))()
+        end
     end
 ]]
 if qot then
@@ -219,6 +221,7 @@ getgenv().fAstConfig = {
     AutoParry = pickBool(oldCfg.AutoParry, savedCfg.AutoParry, true),
     ParryKeybind = oldCfg.ParryKeybind or (savedCfg.ParryKeyName and Enum.KeyCode[savedCfg.ParryKeyName]) or Enum.KeyCode.V,
     AutoBoss = pickBool(oldCfg.AutoBoss, savedCfg.AutoBoss, true),
+    AutoRanked = pickBool(oldCfg.AutoRanked, savedCfg.AutoRanked, false),
     AutoReturnLobby = pickBool(oldCfg.AutoReturnLobby, savedCfg.AutoReturnLobby, true),
     AutoClaimRewards = pickBool(oldCfg.AutoClaimRewards, savedCfg.AutoClaimRewards, false),
     SelectedBoss = oldCfg.SelectedBoss or savedCfg.SelectedBoss or "The Headless Shogun",
@@ -236,6 +239,7 @@ local function SaveConfig()
                 AutoParry = c.AutoParry,
                 ParryKeyName = c.ParryKeybind and c.ParryKeybind.Name or "V",
                 AutoBoss = c.AutoBoss,
+                AutoRanked = c.AutoRanked,
                 AutoReturnLobby = c.AutoReturnLobby,
                 AutoClaimRewards = c.AutoClaimRewards,
                 SelectedBoss = c.SelectedBoss,
@@ -707,10 +711,41 @@ local function FindBossTarget(chosenBoss)
     return candidates[1]
 end
 
--- ค้นหาศัตรูเป้าหมาย (รองรับทั้งบอสและคู่ต่อสู้ในสนามประลอง)
+-- ค้นหาศัตรูเป้าหมาย (รองรับทั้งบอสและคู่ต่อสู้ในสนามประลอง Ranked 1v1)
 local function FindAnyTarget()
     if IsInLobby() then return nil end
 
+    -- 1. ตรวจสอบคู่ต่อสู้ในโหมด Ranked 1v1 / ดวล PVP
+    local mc = nil
+    pcall(function() mc = GameManager:GetController("MatchController") end)
+    local match = mc and mc.ActiveLocalPlayerMatch
+    if match and not match.IsFinished then
+        local localComb = match:GetLocalCombatant()
+        local myTeam = localComb and localComb.teamIndex
+        if myTeam then
+            local living = match:GetLivingEnemyCombatants(myTeam)
+            if living and #living > 0 then
+                for _, c in ipairs(living) do
+                    local oppChar = c.character
+                    if not oppChar and c.charId then
+                        pcall(function()
+                            local cc = GameManager:GetController("CharacterController")
+                            local h = cc and cc:GetLoadedCharacterHandlerByCharId(c.charId)
+                            if h then oppChar = h.OriginalModel end
+                        end)
+                    end
+                    if oppChar and oppChar:FindFirstChild("HumanoidRootPart") and oppChar:GetAttribute("IsDead") ~= true then
+                        local hum = oppChar:FindFirstChildOfClass("Humanoid")
+                        if hum and hum.Health > 0 then
+                            return oppChar
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. ตรวจสอบเป้าหมายบอส
     if getgenv().fAstConfig then
         local b = FindBossTarget(getgenv().fAstConfig.SelectedBoss)
         if b and IsBossAlive(b) then return b end
@@ -725,13 +760,28 @@ local function FindAnyTarget()
     end)
     if tlcTarget then return tlcTarget end
 
+    -- 3. ค้นหาผู้เล่นฝ่ายตรงข้ามในสนามดวล (PVP Arena Fallback)
     local myRoot = GetMyRoot()
     if not myRoot then return nil end
     local char = LocalPlayer.Character
 
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local m = p.Character
+            local r = m:FindFirstChild("HumanoidRootPart")
+            local h = m:FindFirstChildOfClass("Humanoid")
+            if r and h and h.Health > 0 and m:GetAttribute("IsDead") ~= true then
+                if mc and mc:IsCharacterEnemyOfLocalPlayer(m) then
+                    return m
+                end
+            end
+        end
+    end
+
+    -- 4. บอสหรือ NPC อื่นๆ
     local closest, closestDist = nil, 85
     for _, m in ipairs(workspace:GetChildren()) do
-        if m:IsA("Model") and m ~= char and m.Name ~= "Player_Client" and Players:GetPlayerFromCharacter(m) == nil then
+        if m:IsA("Model") and m ~= char and m.Name ~= "Player_Client" then
             local r = m:FindFirstChild("HumanoidRootPart")
             local h = m:FindFirstChildOfClass("Humanoid")
             if r and h and IsCombatOpponent(m) then
@@ -750,73 +800,36 @@ end
 local function GetPerfectStrikeCFrame(origCF)
     if IsInLobby() then return origCF end
     local target = FindAnyTarget()
-    if target and IsBossAlive(target) then
+    if target and (IsBossAlive(target) or Players:GetPlayerFromCharacter(target) ~= nil or target:IsA("Model")) then
         local bRoot = target:FindFirstChild("HumanoidRootPart")
         if bRoot then
             local bPos = bRoot.Position
             local myRoot = GetMyRoot()
             local myPos = (myRoot and myRoot.Position) or (typeof(origCF) == "CFrame" and origCF.Position) or bPos
             local toB = (bPos - myPos)
+            local dist = toB.Magnitude
+            -- หากอยู่ในระยะการฟันประชิด (ไม่เกิน 7 studs) ให้ใช้ตำแหน่งจริงที่เรายืนอยู่แล้วหันหน้าฟันเข้าหาศัตรูตรงๆ
+            if dist <= 7.0 then
+                return CFrame.lookAt(myPos, Vector3.new(bPos.X, myPos.Y, bPos.Z))
+            end
             local flat = Vector3.new(toB.X, 0, toB.Z)
             local unit = flat.Magnitude > 0.05 and flat.Unit or -bRoot.CFrame.LookVector
-            -- ฮิตบ็อกซ์ของอาวุธจะยื่นออกไปข้างหน้าตัวละครประมาณ 4 studs (hitboxCFrame = 0, 0, -4)
-            -- ดังนั้นการวางตำแหน่งอ้างอิงห่างจากบอส 2.5 studs หันหน้าเข้าหาบอส จะทำให้ตัวบอสอยู่กึ่งกลางฮิตบ็อกซ์ 100%
-            local strikePos = bPos - unit * 2.5
+            local strikePos = bPos - unit * 2.2
             return CFrame.lookAt(strikePos, bPos)
         end
     end
     return origCF
 end
 
-task.spawn(function()
-    pcall(function()
-        local rem = ReplicatedStorage:WaitForChild("Remotes", 15)
-        local pc = rem and rem:WaitForChild("PlayerCharacter", 15)
-        local req = pc and pc:WaitForChild("Request", 15)
-        local RequestHitboxOnImpact = req and req:WaitForChild("RequestHitboxOnImpact", 15)
-        if not RequestHitboxOnImpact then return end
-
-        -- 1. Hook ผ่าน hookmetamethod (__namecall) เพื่อดักจับการยิงผ่าน RemoteEvent:FireServer(...)
-        if hookmetamethod and not getgenv()._fAstHitboxNamecallHooked then
-            getgenv()._fAstHitboxNamecallHooked = true
-            local oldNamecall
-            oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-                local method = getnamecallmethod()
-                if self == RequestHitboxOnImpact and method == "FireServer" then
-                    local args = {...}
-                    if #args >= 1 then
-                        args[1] = GetPerfectStrikeCFrame(args[1])
-                        return oldNamecall(self, unpack(args))
-                    end
-                end
-                return oldNamecall(self, ...)
-            end)
-        end
-
-        -- 2. Hook สำรองผ่าน hookfunction สำหรับกรณีเรียกตรงผ่าน dot (.FireServer)
-        if type(hookfunction) == "function" and not getgenv()._fAstHitboxFuncHooked then
-            getgenv()._fAstHitboxFuncHooked = true
-            local oldHitboxFire
-            oldHitboxFire = hookfunction(RequestHitboxOnImpact.FireServer, function(self, cf, t, id)
-                if self == RequestHitboxOnImpact then
-                    cf = GetPerfectStrikeCFrame(cf)
-                end
-                return oldHitboxFire(self, cf, t, id)
-            end)
-        end
-    end)
-end)
-
--- เช็คสกิลอันติของคู่ต่อสู้ใน PVP
+-- เช็คสกิลอันติของคู่ต่อสู้ใน PVP (เฉพาะท่าอันติจริงของเกมเท่านั้น)
 local function IsUltimateAttack(impactData)
     if not impactData then return false end
-    if impactData.triggerUltimate or impactData.unparryable then
+    if impactData.triggerUltimate then
         return true
     end
     if impactData.sourceModule then
         local modName = impactData.sourceModule.Name
-        local fullName = impactData.sourceModule:GetFullName()
-        if string.find(modName, "Ultimate") or string.find(fullName, "Ultimate") then
+        if modName == "Ultimate" or string.find(modName, "Ultimate") then
             return true
         end
     end
@@ -832,6 +845,18 @@ end
 local isPerformingUltimate = false
 local ultCastTime = 0
 local lastUltAttempt = 0
+local consecutiveHitsTaken = 0
+local pvpIncomingHitIndex = 0
+
+function IsInDuelPlace()
+    if game.PlaceId == 100484168444874 then return true end
+    if workspace:FindFirstChild("Arena") or workspace:FindFirstChild("ArenaMap") or workspace:FindFirstChild("DuelMap") then
+        if not workspace:FindFirstChild("HalloweenEventHubMap") and not workspace:FindFirstChild("LobbyMap") then
+            return true
+        end
+    end
+    return false
+end
 
 local function ApplyCleanHook(char)
     task.spawn(function()
@@ -880,13 +905,24 @@ local function ApplyCleanHook(char)
         end
 
         am._computeImpactResolution = function(self, impactData)
+            local isFromPlayer = false
             local isFromBoss = false
             if impactData.attackerCharacter then
                 local plr = Players:GetPlayerFromCharacter(impactData.attackerCharacter)
-                if not plr or plr ~= LocalPlayer then isFromBoss = true end
+                if plr and plr ~= LocalPlayer then
+                    isFromPlayer = true
+                elseif not plr then
+                    isFromBoss = true
+                end
             end
 
-            -- ถ้าโดนโจมตีจากบอสและเปิด AutoBoss -> Parry 100%
+            local isRankedCombat = (getgenv().fAstConfig and getgenv().fAstConfig.AutoRanked) or IsInDuelPlace()
+            if isRankedCombat then
+                isFromPlayer = true
+                isFromBoss = false
+            end
+
+            -- 1. ถ้าโดนโจมตีจากบอส PVE และเปิด AutoBoss -> Parry 100%
             if isFromBoss and getgenv().fAstConfig and getgenv().fAstConfig.AutoBoss then
                 -- ปลดล็อคท่าโกงบอส: บังคับลบเงื่อนไข unparryable / unblockable ทุกท่า (รวมถึง Thrust, Ichimonji, Wave ในระดับ 2 และ 3)
                 impactData.unparryable = nil
@@ -958,28 +994,60 @@ local function ApplyCleanHook(char)
                 return res
             end
 
-            -- ถ้าเป็นการเล่นใน PVP ทั่วไป (AutoParry)
-            if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoParry then
+            -- 2. ถ้าเป็นการเล่นใน PVP ทั่วไป (AutoParry) หรือ AutoRanked
+            if not (getgenv().fAstConfig and (getgenv().fAstConfig.AutoParry or isRankedCombat)) then
                 return CleanOriginalCompute(self, impactData)
             end
 
-            -- ไม่กันอันติของทีมตรงข้ามใน PVP
-            if IsUltimateAttack(impactData) then
-                return CleanOriginalCompute(self, impactData)
+            -- [ความเนียนสำหรับ PvP / Ranked 1v1]: ตีมา 3 ครั้ง โดนเรา 1 ครั้ง (แพรี่ 2 ครั้ง, โดน 1 ครั้ง)
+            local myHum = handler.Humanoid
+            local myHealth = (myHum and myHum.Health) or 100
+            local myModel = handler.OriginalModel or (handler.RigHandler and handler.RigHandler.Model) or LocalPlayer.Character
+            local myPosture = (myModel and myModel:GetAttribute("Posture")) or 100
+
+            -- [PVP / Ranked 1v1]: ปิดการยอมโดนตี 100% ในโหมด 1v1 เพื่อไม่ให้ติด Hitstun ชะงักค้าง 1 วิ
+            local shouldLetEnemyHit = false
+
+            -- ปลดล็อคท่าที่เกมตั้งค่าว่าห้ามแพรี่ (Unparryable / Unblockable / Undodgeable) ให้แพรี่ได้ 100% ทุกท่า
+            impactData.unparryable = nil
+            impactData.unblockable = nil
+            impactData.undodgeable = nil
+
+            -- ผลลัพธ์การแพรี่: หลอดบล็อคเราไม่แตก และยังไม่บังคับให้บล็อคศัตรูแตก (สู้กันแบบธรรมชาติ)
+            if not impactData.impactResults then impactData.impactResults = {} end
+            if not impactData.impactResults.Parry then
+                impactData.impactResults.Parry = {
+                    effect = "Parry",
+                    postureDamage = -15,
+                    postureDamageAttacker = 15,
+                    staggerType = "Parry",
+                    staggerDuration = 0.8,
+                    staggerKnockback = 1
+                }
+            else
+                local pRes = impactData.impactResults.Parry
+                pRes.postureDamage = math.min(pRes.postureDamage or 0, -15)
+                pRes.postureDamageAttacker = 15
+                pRes.willBreakAttackerPosture = nil
+                pRes.staggerType = "Parry"
+                pRes.staggerDuration = 0.8
             end
 
             local oldP = handler.IsParrying
+            local oldB = handler.IsBlocking
             handler.IsParrying = true
+            handler.IsBlocking = true
             local res = CleanOriginalCompute(self, impactData)
             handler.IsParrying = oldP
+            handler.IsBlocking = oldB
 
-            -- เคาน์เตอร์ตีสวนกลับสำหรับ AutoParry ใน PVP ด้วยเช่นกัน
+            -- เคาน์เตอร์ตีสวนกลับทันทีหลังแพรี่สำเร็จ (Parry Riposte 100% Punish)
             task.spawn(function()
-                task.wait(0.04)
+                task.wait(0.12)
                 pcall(function()
                     if IsInLobby() then return end
-                    local target = FindAnyTarget()
-                    if not target or not IsBossAlive(target) then return end
+                    local atkChar = impactData.attackerCharacter
+                    if not atkChar or atkChar:GetAttribute("IsDead") == true then return end
                     if handler and handler.ActionManager then
                         local actMgr = handler.ActionManager
                         if handler._forceClearBlockInput then
@@ -994,6 +1062,24 @@ local function ApplyCleanHook(char)
                             actMgr._queuedActionType = nil
                             actMgr._queuedActionProperties = nil
                         end
+
+                        -- แทงคริติคอลปลิดชีพทันทีถ้าศัตรูบล็อคแตกจากการโดนแพรี่
+                        local isBroken = (atkChar:GetAttribute("OpenForCritical") == true) or ((atkChar:GetAttribute("Posture") or 100) <= 0)
+                        if isBroken then
+                            pcall(function()
+                                PlayerCharacter.Request.CriticalStrike:FireServer(atkChar)
+                            end)
+                            return
+                        end
+
+                        if handler:CanPerformUltimate() then
+                            handler._desiredQueuedAction = "Ultimate"
+                            handler._desiredQueuedActionDuration = 0.8
+                            actMgr:TryQueueBasicAttack("Ultimate")
+                            return
+                        end
+
+                        lastRankedAttackTime = 0
                         handler._desiredQueuedAction = "LightAttack"
                         actMgr:TryQueueBasicAttack("Light")
                     end
@@ -1048,6 +1134,7 @@ local function LeaveFinishedArenaOnce()
 end
 
 local function TriggerAutoReturnToLobby(reason)
+    if getgenv().fAstConfig and getgenv().fAstConfig.AutoRanked then return end
     if not getgenv().fAstConfig or (not getgenv().fAstConfig.AutoReturnLobby and not getgenv().fAstConfig.AutoBoss) then return end
     if isReturningLobby then return end
     isReturningLobby = true
@@ -1536,6 +1623,455 @@ getgenv()._BossCombatLoop = RunService.Heartbeat:Connect(function()
     end
 end)
 
+-- ==========================================================
+-- RANKED 1V1 AUTOMATION ENGINE
+-- ==========================================================
+local rankedComboSteps = {"Light", "Light", "Light", "Heavy"}
+local rankedComboIndex = 1
+local lastRankedAttackTime = 0
+local lastRankedQueueTime = 0
+local lastMatchFinishHandledTime = 0
+local isRankedUltActive = false
+local rankedUltStartTime = 0
+local lastRankedDodgeTime = 0
+local rankedLastPos = Vector3.zero
+local rankedStuckTicks = 0
+local isRecoveringPosture = false
+
+local function GetActiveRankedMatch()
+    local mc = nil
+    pcall(function() mc = GameManager:GetController("MatchController") end)
+    return mc and mc.ActiveLocalPlayerMatch
+end
+
+local function GetRankedEnemy(match, myTeam)
+    if not match or not myTeam then return nil, nil end
+    local living = match:GetLivingEnemyCombatants(myTeam)
+    if living and #living > 0 then
+        for _, c in ipairs(living) do
+            local char = c.character
+            local root = nil
+            if c.charId then
+                pcall(function()
+                    local cc = GameManager:GetController("CharacterController")
+                    local h = cc and cc:GetLoadedCharacterHandlerByCharId(c.charId)
+                    if h then
+                        if not char then char = h.Model or h.OriginalModel end
+                        if h.Root and h.Root.Parent then root = h.Root end
+                    end
+                end)
+            end
+            if not root and char then
+                root = char:FindFirstChild("HumanoidRootPart")
+            end
+            if char and root and char:GetAttribute("IsDead") ~= true then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    return char, root
+                end
+            end
+        end
+    end
+    -- Fallback via Players
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local char = p.Character
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if root and hum and hum.Health > 0 and char:GetAttribute("IsDead") ~= true then
+                local mc = GameManager:GetController("MatchController")
+                if mc and mc:IsCharacterEnemyOfLocalPlayer(char) then
+                    return char, root
+                end
+            end
+        end
+    end
+    -- Fallback via Workspace Player Models
+    for _, m in ipairs(workspace:GetChildren()) do
+        if m:IsA("Model") and m.Name == "Player" and m ~= LocalPlayer.Character then
+            local root = m:FindFirstChild("HumanoidRootPart")
+            local hum = m:FindFirstChildOfClass("Humanoid")
+            if root and hum and hum.Health > 0 and m:GetAttribute("IsDead") ~= true then
+                return m, root
+            end
+        end
+    end
+    return nil, nil
+end
+
+local isCurrentlyInQueue = false
+function IsInDuelPlace()
+    if game.PlaceId == 100484168444874 then return true end
+    if workspace:FindFirstChild("Arena") or workspace:FindFirstChild("ArenaMap") or workspace:FindFirstChild("DuelMap") then
+        if not workspace:FindFirstChild("HalloweenEventHubMap") and not workspace:FindFirstChild("LobbyMap") then
+            return true
+        end
+    end
+    return false
+end
+
+local function CheckIfQueueActiveInGUI()
+    if isCurrentlyInQueue then return true end
+    local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pgui then return false end
+    local lhud = pgui:FindFirstChild("LobbyHUD")
+    if lhud then
+        local cancelBtn = lhud:FindFirstChild("CancelQueueButton", true) or lhud:FindFirstChild("LeaveQueueButton", true)
+        if cancelBtn and cancelBtn.Visible then return true end
+        local timer = lhud:FindFirstChild("QueueTimer", true) or lhud:FindFirstChild("QueueTimerLabel", true)
+        if timer and timer.Visible then return true end
+    end
+    return false
+end
+
+pcall(function()
+    local mm = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Matchmaking")
+    if mm and mm:FindFirstChild("UpdateMatchmakingStatus") then
+        mm.UpdateMatchmakingStatus.OnClientEvent:Connect(function(status)
+            if status then
+                isCurrentlyInQueue = true
+            else
+                isCurrentlyInQueue = false
+            end
+        end)
+    end
+end)
+
+if getgenv()._RankedCombatLoop then
+    pcall(function() getgenv()._RankedCombatLoop:Disconnect() end)
+    getgenv()._RankedCombatLoop = nil
+end
+
+getgenv()._RankedCombatLoop = RunService.Heartbeat:Connect(function()
+    if not getgenv().fAstConfig or not getgenv().fAstConfig.AutoRanked then return end
+
+    local inDuelPlace = IsInDuelPlace()
+
+    -- ปลดล็อคหน้าจอดำ (Loading Screen) อัตโนมัติหากเกมค้างตอนเข้าห้องดวล
+    if inDuelPlace then
+        isCurrentlyInQueue = false
+        pcall(function()
+            local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+            if pgui then
+                local ls = pgui:FindFirstChild("NewLoadingScreen_halloween")
+                if ls and ls.Enabled then ls.Enabled = false end
+                local wl = pgui:FindFirstChild("WorldLoadingGui")
+                if wl and wl.Enabled then wl.Enabled = false end
+                local gl = pgui:FindFirstChild("GUILoaderScreen")
+                if gl and gl.Enabled then gl.Enabled = false end
+            end
+        end)
+    end
+
+    local match = GetActiveRankedMatch()
+
+    -- 1. หากอยู่ในล็อบบี้และไม่ได้อยู่ในห้องดวล -> เข้าคิว Ranked 1v1 อัตโนมัติ วนลูปต่อเนื่องจนกว่าจะปิด
+    if not inDuelPlace and (not match or IsInLobby()) then
+        local inQueueUI = false
+        pcall(function()
+            local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+            if pgui then
+                local lhud = pgui:FindFirstChild("LobbyHUD")
+                if lhud then
+                    local cancelBtn = lhud:FindFirstChild("CancelQueueButton", true) or lhud:FindFirstChild("LeaveQueueButton", true)
+                    if cancelBtn and cancelBtn.Visible then inQueueUI = true end
+                    local timer = lhud:FindFirstChild("QueueTimer", true) or lhud:FindFirstChild("QueueTimerLabel", true)
+                    if timer and timer.Visible then inQueueUI = true end
+                end
+                local mmGui = pgui:FindFirstChild("MatchmakingGui") or pgui:FindFirstChild("QueueGui")
+                if mmGui and mmGui.Enabled then inQueueUI = true end
+            end
+        end)
+
+        if not inQueueUI then
+            isCurrentlyInQueue = false
+        end
+
+        -- ส่งคำขอค้นหาห้องซ้ำทุกๆ 5 วินาทีหากยังไม่ได้อยู่ในคิว เพื่อให้วนลูปค้นหาต่อเนื่อง 100%
+        if (not inQueueUI or not isCurrentlyInQueue) and (tick() - lastRankedQueueTime > 5.0) then
+            lastRankedQueueTime = tick()
+            isCurrentlyInQueue = true
+            pcall(function()
+                local mm = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Matchmaking")
+                if mm and mm:FindFirstChild("RequestEnterQueue") then
+                    mm.RequestEnterQueue:FireServer("ranked1v1")
+                    ShowHUDToast("⚔️ ค้นหาห้อง Ranked 1v1 วนลูปอัตโนมัติ...", Color3.fromRGB(170, 95, 255))
+                end
+            end)
+        end
+        return
+    end
+
+    -- 2. เมื่อแมตช์จบ (Match Finished หรือขึ้นหน้าจอแพ้/ชนะ PostGameScreen) -> ขอกลับล็อบบี้อัตโนมัติ 100%
+    local isMatchFinished = (match and (match.IsFinished == true or match.RoundState == "PostMatch"))
+    local returnBtnFound = nil
+
+    -- เช็ค UI จบเกมแบบประหยัดรอบ (ไม่สแกน GetDescendants ทุกๆ เฟรม เพื่อตัดอาการกระตุกค้าง 1 วิ)
+    if not isMatchFinished and (tick() - lastMatchFinishHandledTime > 1.0) then
+        pcall(function()
+            local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+            if pgui then
+                local pgs = pgui:FindFirstChild("PostGameScreen", true) or pgui:FindFirstChild("PostMatchScreen", true)
+                if pgs and (pgs.Visible or (pgs:IsA("ScreenGui") and pgs.Enabled)) then
+                    isMatchFinished = true
+                end
+            end
+        end)
+    end
+    if isMatchFinished then
+        local handler = CharacterController:GetLocalCharacterHandler()
+        local am = handler and handler.ActionManager
+        if handler and am then
+            HardStopAllAttacks(handler, am)
+        end
+        if tick() - lastMatchFinishHandledTime > 0.8 then
+            lastMatchFinishHandledTime = tick()
+            ShowHUDToast("🏆 การแข่งขันจบลงแล้ว! กำลังกลับล็อบบี้เพื่อต่อคิวรอบใหม่...", Color3.fromRGB(50, 255, 120))
+
+            -- 1. ยิง Remote จริงของ Match (Remotes.Match.RequestReturnToLobby):
+            pcall(function()
+                local matchRemote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Match")
+                if matchRemote and matchRemote:FindFirstChild("RequestReturnToLobby") then
+                    local matchId = match and match.MatchId
+                    if not matchId then
+                        local mc = GameManager:GetController("MatchController")
+                        matchId = mc and mc.ActiveLocalPlayerMatchId
+                    end
+                    matchRemote.RequestReturnToLobby:FireServer(matchId)
+                end
+            end)
+
+            -- 2. กดปุ่ม "กลับ" (ReturnButton) ในหน้าต่าง UI อัตโนมัติ:
+            if returnBtnFound then
+                pcall(function()
+                    if firesignal then
+                        firesignal(returnBtnFound.Activated)
+                    end
+                end)
+            end
+        end
+        return
+    end
+
+    -- หากยังไม่พบข้อมูล Match ให้รอรอบเริ่ม
+    if not match then return end
+
+    local handler = CharacterController:GetLocalCharacterHandler()
+    if not handler or not handler.ActionManager then return end
+    local myRoot = handler.Root or GetMyRoot()
+    local myHum = handler.Humanoid
+    if not myRoot or not myHum or myHum.Health <= 0 then return end
+    local am = handler.ActionManager
+
+    -- 3. ตรวจสอบสถานะรอบการแข่งขัน
+    local localComb = match:GetLocalCombatant()
+    local myTeam = localComb and localComb.teamIndex
+    if not myTeam then return end
+    local oppTeam = (myTeam == 1) and 2 or 1
+    local oppScore = (match.Teams and match.Teams[oppTeam] and match.Teams[oppTeam].score) or 0
+    local myScore = (match.Teams and match.Teams[myTeam] and match.Teams[myTeam].score) or 0
+
+    local enemyChar, enemyRoot = GetRankedEnemy(match, myTeam)
+    if not enemyChar or not enemyRoot then
+        return
+    end
+
+    local ePos = enemyRoot.Position
+    local toEnemy = (ePos - myRoot.Position)
+    local dist = toEnemy.Magnitude
+
+    -- ตรวจสอบอาวุธ (ชักอาวุธรอไว้ล่วงหน้า)
+    if not handler.EquippedWeapon and (tick() - lastEquipTime > 1.2) then
+        lastEquipTime = tick()
+        pcall(function()
+            PlayerCharacter.Request.SetEquippedWeapon:FireServer(true)
+        end)
+    end
+
+    -- 3. ตรวจสอบสถานะรอบการแข่งขัน: ถ้าเกมยังไม่เริ่ม (RoundState ~= "Active") จะยังไม่เริ่มบุกและไม่เริ่มตีก่อนเด็ดขาด
+    if match.RoundState ~= "Active" or match.Phase ~= "Rounds" then
+        HardStopAllAttacks(handler, am)
+        handler.DesiredMoveDirection = Vector3.zero
+        if myHum then myHum:Move(Vector3.zero) end
+        return
+    end
+
+    -- // [โหมดสู้ Ranked 1v1]: พุ่งติดตัวศัตรู + เกาะติดหนึบ + หลบสิ่งกีดขวาง/กระโดดข้ามรั้ว
+    local flatToEnemy = Vector3.new(ePos.X - myRoot.Position.X, 0, ePos.Z - myRoot.Position.Z)
+    local dist = flatToEnemy.Magnitude
+    local dirUnit = dist > 0.05 and flatToEnemy.Unit or Vector3.new(0, 0, 1)
+
+    -- 1. ล็อคเป้าและหันหน้ามองศัตรูแม่นยำ 100% (Snap Aim 999)
+    handler.TargetLock = enemyRoot
+    handler.OverrideLookDirection = dirUnit
+    handler.DesiredLookDirection = dirUnit
+    handler.DesiredLookResponsiveness = 999
+
+    pcall(function()
+        local tlc = GameManager:GetController("TargetLockController")
+        if tlc then
+            if tlc.ForcedTargetLock ~= enemyRoot then
+                tlc:SetForcedTargetLock(enemyRoot)
+            end
+            if tlc.Target ~= enemyRoot then
+                tlc:SetTarget(enemyRoot)
+            end
+        end
+        workspace.CurrentCamera.CFrame = CFrame.lookAt(workspace.CurrentCamera.CFrame.Position, ePos)
+    end)
+
+    -- 2. ระบบป้องกันตัวละครลอย / ปีนหัวศัตรู (Anti-Float & Ground Clamping)
+    -- ถ้าตัวละครเราลอยสูงกว่าระดับพื้นของศัตรู ให้กดลงสู่พื้นทันที ห้ามลอยเด็ดขาด
+    if myRoot.Position.Y > ePos.Y + 0.6 then
+        if myRoot.AssemblyLinearVelocity.Y > -10 then
+            myRoot.AssemblyLinearVelocity = Vector3.new(myRoot.AssemblyLinearVelocity.X, -25, myRoot.AssemblyLinearVelocity.Z)
+        end
+    end
+
+    -- ระบบหลุดสิ่งกีดขวาง (Anti-Stuck): ถ้าติดขัดนานเกิน 0.5 วินาทีขณะอยู่ไกล ให้กระโดดปกติแบบธรรมชาติ
+    local moveDist = (myRoot.Position - rankedLastPos).Magnitude
+    if moveDist < 0.2 and dist > 4.5 then
+        rankedStuckTicks = rankedStuckTicks + 1
+    else
+        rankedStuckTicks = 0
+        rankedLastPos = myRoot.Position
+    end
+
+    if rankedStuckTicks > 25 and myHum and myHum.FloorMaterial ~= Enum.Material.Air then
+        myHum.Jump = true
+        rankedStuckTicks = 0
+        local sideVec = Vector3.new(-dirUnit.Z, 0, dirUnit.X)
+        dirUnit = (dirUnit + sideVec * 0.8).Unit
+    end
+
+    -- 3. ระบบตรวจจับหลอดบล็อคตัวเอง (Posture Recovery & Anti-Block Break)
+    local myModel = handler.OriginalModel or (handler.RigHandler and handler.RigHandler.Model) or LocalPlayer.Character
+    local myPosture = (myModel and myModel:GetAttribute("Posture")) or 100
+    local maxPosture = (myModel and myModel:GetAttribute("MaxPosture")) or 100
+    local postureRatio = myPosture / maxPosture
+
+    -- ปลดบล็อคที่ค้างอยู่ (เพื่อเปิดทางให้หลอดบล็อครีเจนเร็วขึ้น)
+    if am.BlockAction and am.BlockAction.CanCancel and not handler.IsParrying then
+        if handler._forceClearBlockInput then
+            handler:_forceClearBlockInput()
+        else
+            am.BlockAction._wantsToRelease = true
+        end
+    end
+
+    -- 4. ระบบเคลื่อนที่ & พุ่งประชิดตัว (Controlled Rush & Dash)
+    local canDodge = false
+    pcall(function() canDodge = am:CanStartDodge() end)
+
+    if dist > 3.2 then
+        -- พุ่งเข้าหาศัตรูด้วยความเร็วสูงแบบราบเรียบ (ไม่ดันแกน Y)
+        local rushSpeed = math.clamp(dist * 3.8, 22, 32)
+        myRoot.AssemblyLinearVelocity = Vector3.new(dirUnit.X * rushSpeed, myRoot.AssemblyLinearVelocity.Y, dirUnit.Z * rushSpeed)
+        handler.DesiredMoveDirection = dirUnit
+        if myHum then myHum:Move(dirUnit) end
+
+        -- แดชพุ่งเข้าหาเมื่ออยู่ไกล
+        if canDodge and (tick() - lastRankedDodgeTime > 0.5) then
+            lastRankedDodgeTime = tick()
+            handler._desiredDodge = 0.27
+        end
+    else
+        -- ระยะฟันประชิดตัว (Melee Sweet Spot: 1.8 - 3.2 studs):
+        -- รักษาระยะยืนบนพื้นให้หน้าอกตรงกับศัตรู ไม่ชนจนปีนหัว และไม่ถอยห่าง
+        if dist < 1.8 then
+            local backVec = -dirUnit
+            handler.DesiredMoveDirection = backVec
+            if myHum then myHum:Move(backVec) end
+            myRoot.AssemblyLinearVelocity = Vector3.new(dirUnit.X * -6, myRoot.AssemblyLinearVelocity.Y, dirUnit.Z * -6)
+        else
+            -- ระยะ 1.8 - 3.2 studs: ระยะทองคำ ฟันโดน 100% ตัวติดพื้นมั่นคง (ไม่แดชสะดุดจังหวะฟัน)
+            handler.DesiredMoveDirection = dirUnit * 0.5
+            if myHum then myHum:Move(dirUnit * 0.5) end
+            local eVel = enemyRoot.AssemblyLinearVelocity
+            myRoot.AssemblyLinearVelocity = Vector3.new(eVel.X, myRoot.AssemblyLinearVelocity.Y, eVel.Z)
+        end
+    end
+
+    -- ปลดบล็อคค้าง
+    if am.BlockAction and am.BlockAction.CanCancel and not handler.IsParrying then
+        if handler._forceClearBlockInput then
+            handler:_forceClearBlockInput()
+        else
+            am.BlockAction._wantsToRelease = true
+        end
+    end
+
+    -- ตรวจจับศัตรูบล็อคแตก (Guard Break / Posture Break)
+    local tlc = nil
+    pcall(function() tlc = GameManager:GetController("TargetLockController") end)
+    local critTarget = (tlc and tlc.CriticalStrikeTarget) or CharacterController.CriticalStrikeTarget
+    local isOpenCrit = (enemyRoot:GetAttribute("OpenForCritical") == true) or ((enemyChar:GetAttribute("Posture") or 100) <= 0)
+    local isBlockBroken = isOpenCrit or (critTarget and (critTarget == enemyRoot or critTarget.Parent == enemyChar))
+
+    local canUlt = false
+    pcall(function() canUlt = handler:CanPerformUltimate() end)
+
+    -- ตรวจสอบสถานะออกท่าอันติ (ไม่ล็อกหน่วงเวลา 1.4 วิ ป้องกันการค้างฟันไม่ออก)
+    local currentAct = am.CurrentAction
+    local actProps = currentAct and currentAct.Properties
+    local actAttackName = actProps and tostring(actProps.attackName) or ""
+    local isUltActionActive = currentAct and (actAttackName == "Ultimate" or string.find(actAttackName, "Ultimate") ~= nil)
+    if not isUltActionActive then
+        isRankedUltActive = false
+    end
+
+    -- 4. โจมตีแม่นยำสูงและรวดเร็วเมื่ออยู่ในระยะฟัน (dist <= 6.5 studs)
+    if not isUltActionActive and dist <= 6.5 then
+        -- 1. ปล่อยอันติทันทีที่เกจพร้อม (Instant Ultimate Overpower)
+        if canUlt and (tick() - rankedUltStartTime > 1.2) then
+            rankedUltStartTime = tick()
+            isRankedUltActive = true
+            if handler._forceClearBlockInput then handler:_forceClearBlockInput() end
+            if am._queuedActionType then
+                am._queuedActionType = nil
+                am._queuedActionProperties = nil
+            end
+            if am.CurrentAction and am.CurrentAction.CanCancel then
+                pcall(function() am:CancelCurrentAction() end)
+            end
+            handler._desiredQueuedAction = "Ultimate"
+            handler._desiredQueuedActionDuration = 0.8
+            am:TryQueueBasicAttack("Ultimate")
+            return
+        end
+
+        -- 2. แทงคริติคอลปลิดชีพทันทีเมื่อศัตรูบล็อคแตก (Instant Critical Strike)
+        if isBlockBroken and not isRankedUltActive then
+            if am and am.CurrentAction and am.CurrentAction.CanCancel then
+                pcall(function() am:CancelCurrentAction() end)
+            end
+            pcall(function()
+                PlayerCharacter.Request.CriticalStrike:FireServer(enemyChar)
+            end)
+            return
+        end
+
+        -- 3. ตีคอมโบรัวลื่นไหลต่อเนื่อง 100% (Light Attack Chain - ปิดชาร์จ Heavy ที่ทำให้ค้าง 1 วิ)
+        if not isRankedUltActive and (tick() - lastRankedAttackTime > 0.16) then
+            local canQueue = false
+            if not currentAct then
+                canQueue = true
+            else
+                canQueue = currentAct.CanQueueBasicAttacks or currentAct.CanQueueActions or (tick() - lastRankedAttackTime > 0.32)
+            end
+
+            if canQueue and not am._queuedActionType then
+                lastRankedAttackTime = tick()
+                rankedComboIndex = rankedComboIndex + 1
+                local nextAttack = "Light"
+                local actionType = "LightAttack"
+                handler._desiredQueuedAction = actionType
+                am:TryQueueBasicAttack(nextAttack)
+            end
+        end
+    end
+end)
+
 -- // 8. MODERN CYBER-AESTHETIC GLASS UI (fAst Hub) // --
 pcall(function()
     if gethui and gethui():FindFirstChild("fAstHub_DG") then gethui().fAstHub_DG:Destroy() end
@@ -1553,7 +2089,7 @@ ScreenGui.Parent = guiParent
 
 local Main = Instance.new("Frame")
 Main.Name = "MainFrame"
-Main.Size = UDim2.new(0, 338, 0, 440)
+Main.Size = UDim2.new(0, 338, 0, 480)
 Main.Position = UDim2.new(0.04, 0, 0.15, 0)
 Main.BackgroundColor3 = Color3.fromRGB(15, 13, 24)
 Main.BorderSizePixel = 0
@@ -1742,13 +2278,18 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Content Frame
-local Content = Instance.new("Frame")
+-- Content Scrolling Frame (รองรับการเลื่อนดูการ์ดทุกฟังก์ชันบนมือถือและจอคอมพิวเตอร์)
+local Content = Instance.new("ScrollingFrame")
 Content.Name = "Content"
-Content.Size = UDim2.new(1, -20, 1, -56)
-Content.Position = UDim2.new(0, 10, 0, 52)
+Content.Size = UDim2.new(1, -16, 1, -56)
+Content.Position = UDim2.new(0, 8, 0, 52)
 Content.BackgroundTransparency = 1
 Content.BorderSizePixel = 0
+Content.ScrollBarThickness = 3
+Content.ScrollBarImageColor3 = Color3.fromRGB(155, 75, 255)
+Content.CanvasSize = UDim2.new(0, 0, 0, 0)
+Content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Content.ClipsDescendants = true
 Content.Parent = Main
 
 local UIList = Instance.new("UIListLayout")
@@ -2076,7 +2617,7 @@ local function ToggleDropdown(forceClose)
 
     local expandedRowH = 42 + (#BossList * 27 + 8)
     local targetRowH = isDropdownOpen and expandedRowH or 42
-    local targetMainH = isDropdownOpen and (440 + (#BossList * 27 + 8)) or 440
+    local targetMainH = isDropdownOpen and (480 + (#BossList * 27 + 8)) or 480
     local arrow = isDropdownOpen and "  ^" or "  v"
 
     BossBtn.Text = getgenv().fAstConfig.SelectedBoss .. arrow
@@ -2223,7 +2764,7 @@ ToggleDiffDropdown = function(forceClose)
 
     local expandedRowH = 42 + (#DifficultyList * 27 + 8)
     local targetRowH = isDiffDropdownOpen and expandedRowH or 42
-    local targetMainH = isDiffDropdownOpen and (440 + (#DifficultyList * 27 + 8)) or 440
+    local targetMainH = isDiffDropdownOpen and (480 + (#DifficultyList * 27 + 8)) or 480
     local arrow = isDiffDropdownOpen and "  ^" or "  v"
 
     DiffBtn.Text = getgenv().fAstConfig.SelectedDifficulty .. arrow
@@ -2314,6 +2855,8 @@ end
 
 local function StartBossFightNow()
     if isStartingBossFight then return end
+    if getgenv().fAstConfig and getgenv().fAstConfig.AutoRanked then return end
+    if game.PlaceId == 100484168444874 then return end
     if IsInActiveFight() then
         return
     end
@@ -2405,9 +2948,10 @@ end
 
 local function SetBossFightState(val)
     getgenv().fAstConfig.AutoBoss = val
-    SetBossSwitchState(val)
-    SaveConfig()
     if val then
+        if getgenv().fAstConfig.AutoRanked then
+            SetRankedState(false)
+        end
         StartBossFightNow()
     else
         hadBossFighting = false
@@ -2415,6 +2959,8 @@ local function SetBossFightState(val)
         local handler = CharacterController:GetLocalCharacterHandler()
         HardStopAllAttacks(handler)
     end
+    SetBossSwitchState(val)
+    SaveConfig()
 end
 
 -- ลูปตรวจสอบเข้าสู้บอสอัตโนมัติเมื่ออยู่นอกการต่อสู้ (Auto Re-Queue Boss Fight)
@@ -2443,7 +2989,58 @@ BindClick(BossSwitch, function()
 end)
 
 -- ==========================================================
--- ROW 5: Auto Return Lobby
+-- ROW 5: Auto Ranked 1v1
+-- ==========================================================
+local RankedRow = CreateRowCard("RankedRow", 42, "rbxassetid://10734923549", Color3.fromRGB(175, 95, 255), "Auto Ranked 1v1", Color3.fromRGB(195, 125, 255))
+local RankedSwitch, SetRankedSwitchState = CreateSwitch(RankedRow, Color3.fromRGB(175, 95, 255))
+
+local function SetRankedState(val)
+    getgenv().fAstConfig.AutoRanked = val
+    if val then
+        if getgenv().fAstConfig.AutoBoss then
+            SetBossFightState(false)
+        end
+    end
+    SetRankedSwitchState(val)
+    SaveConfig()
+    local txt = val and "⚔️ AUTO RANKED: ON (ค้นหาห้องวนลูป)" or "❌ AUTO RANKED: OFF"
+    local col = val and Color3.fromRGB(175, 95, 255) or Color3.fromRGB(255, 70, 70)
+    ShowHUDToast(txt, col)
+    if not val then
+        local handler = CharacterController:GetLocalCharacterHandler()
+        HardStopAllAttacks(handler)
+        if handler then
+            handler.DesiredMoveDirection = Vector3.zero
+            if handler.Humanoid then handler.Humanoid:Move(Vector3.zero) end
+            handler.TargetLock = nil
+            handler.OverrideLookDirection = nil
+        end
+        pcall(function()
+            local mm = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Matchmaking")
+            if mm and mm:FindFirstChild("RequestLeaveQueue") then
+                mm.RequestLeaveQueue:FireServer()
+            end
+        end)
+    else
+        if not IsInDuelPlace() then
+            task.spawn(function()
+                pcall(function()
+                    local mm = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Matchmaking")
+                    if mm and mm:FindFirstChild("RequestEnterQueue") then
+                        mm.RequestEnterQueue:FireServer("ranked1v1")
+                    end
+                end)
+            end)
+        end
+    end
+end
+
+BindClick(RankedSwitch, function()
+    SetRankedState(not getgenv().fAstConfig.AutoRanked)
+end)
+
+-- ==========================================================
+-- ROW 6: Auto Return Lobby
 -- ==========================================================
 local ReturnRow = CreateRowCard("ReturnRow", 42, "rbxassetid://76916186329249", Color3.fromRGB(45, 215, 125), "Auto Return Lobby", Color3.fromRGB(60, 230, 140))
 local ReturnSwitch, SetReturnSwitchState = CreateSwitch(ReturnRow, Color3.fromRGB(45, 215, 125))
@@ -2486,6 +3083,7 @@ end)
 -- คืนค่าสถานะสวิตช์และระบบตามที่บันทึกไว้ใน config (จดจำฟังก์ชันที่เปิดไว้ 100%)
 SetParrySwitchState(getgenv().fAstConfig.AutoParry)
 SetBossSwitchState(getgenv().fAstConfig.AutoBoss)
+SetRankedSwitchState(getgenv().fAstConfig.AutoRanked)
 SetReturnSwitchState(getgenv().fAstConfig.AutoReturnLobby)
 SetRewardsSwitchState(getgenv().fAstConfig.AutoClaimRewards)
 
