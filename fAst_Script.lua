@@ -1,3 +1,48 @@
+-- ================= [ ระบบ Heartbeat เช็คคนออนไลน์ ] =================
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local HEARTBEAT_URL = "https://heartbeat-server-h5r4.onrender.com/api/heartbeat"
+local INTERVAL = 30 -- ส่งสัญญาณทุก 30 วินาที
+
+local sessionId = HttpService:GenerateGUID(false)
+local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+
+local function sendPing()
+    if not httpRequest then return end
+
+    local payload = {
+        sessionId = sessionId,
+        userId = player.UserId,
+        username = player.Name
+    }
+
+    pcall(function()
+        httpRequest({
+            Url = HEARTBEAT_URL,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json"
+            },
+            Body = HttpService:JSONEncode(payload)
+        })
+    end)
+end
+
+-- ส่ง Ping ครั้งแรกทันที
+task.spawn(sendPing)
+
+-- วนลูปส่งต่อเนื่องในพื้นหลัง
+task.spawn(function()
+    while true do
+        task.wait(INTERVAL)
+        sendPing()
+    end
+end)
+-- ==============================================================
+
+-- [โค้ดสคริปต์หลักเดิมของคุณต่อจากตรงนี้]
 -- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
