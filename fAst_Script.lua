@@ -41,33 +41,7 @@ local function getDevice()
 end
 
 -- 2. ฟังก์ชันตรวจจับตัวรัน (Executor) ครอบคลุมทั้ง Mobile และ Real PC Executors
-local function getExecutor()
-    -- ตรวจสอบฟังก์ชันมาตรฐาน identifyexecutor / getexecutorname
-    local identify = identifyexecutor or getexecutorname
-    if identify then
-        local name = tostring(identify())
-        if name and name ~= "" and name ~= "nil" then
-            return name
-        end
-    end
-
-    -- ตรวจสอบตัวแปรเฉพาะของตัวรันแต่ละค่าย (PC & Mobile)
-    if syn then return "Synapse X" end
-    if KRNL_LOADED then return "Krnl" end
-    if fluxus then return "Fluxus" end
-    if delta then return "Delta" end
-    if arceus then return "Arceus X" end
-    if codex then return "Codex" end
-    if electron then return "Electron" end
-    if wave then return "Wave" end
-    if seliware then return "Seliware" end
-    if solara then return "Solara" end
-    if hydrogen then return "Hydrogen" end
-    if cryptonic then return "Cryptic" end
-    if is_sirhurt_closure then return "Sirhurt" end
-    if pebc_execute then return "ProtoSmasher" end
-
-    local function getTrueExecutor()
+local function getTrueExecutor()
     if type(identifyexecutor) == "function" then
         local name = identifyexecutor()
         if name and name ~= "" then return name end
@@ -76,14 +50,13 @@ local function getExecutor()
         local name = getexecutorname()
         if name and name ~= "" then return name end
     end
-    if Delta then return "Delta" end
+    if Delta or delta then return "Delta" end
     if arceus then return "Arceus X" end
-    if CODEX_LOADED then return "Codex" end
-    if Fluxus then return "Fluxus" end
-    if syn then return "Unknown (Syn-Emulated)" end
+    if CODEX_LOADED or codex then return "Codex" end
+    if Fluxus or fluxus then return "Fluxus" end
+    if syn then return "Synapse X" end
     return "Unknown"
 end
-
 -- ลูปส่งสัญญาณเบื้องหลัง
 task.spawn(function()
     local make_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
