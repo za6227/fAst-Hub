@@ -1,13 +1,15 @@
--- ================= [ ระบบ Heartbeat ตรวจจับผู้ใช้ ] =================
+-- ==================== [ ระบบ Heartbeat ตรวจจับผู้ใช้ fAst Hub ] ====================
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local player = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
-local SERVER_URL = "https://heartbeat-server-h5r4.onrender.com/api/heartbeat"
+-- เชื่อมต่อไปยังเซิร์ฟเวอร์ Render ของคุณโดยตรง
+local SERVER_URL = "https://heartbeat-server-h5r4.onrender.com"
 local INTERVAL = 30 -- ส่งสัญญาณทุก 30 วินาที
 
--- เช็คอุปกรณ์
+-- ตรวจสอบประเภทอุปกรณ์
 local function getDevice()
     if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
         return "Mobile"
@@ -18,7 +20,7 @@ local function getDevice()
     end
 end
 
--- เช็คตัวรัน
+-- ตรวจสอบตัวรัน (Executor)
 local function getExecutor()
     local identify = identifyexecutor or getexecutorname
     if identify then
@@ -27,43 +29,40 @@ local function getExecutor()
     return "Unknown"
 end
 
-local sessionId = HttpService:GenerateGUID(false)
-local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
-
-local function sendPing()
-    if not httpRequest then return end
-
-    local execName = getExecutor()
-    local payload = {
-        sessionId = sessionId,
-        userId = player.UserId,
-        username = player.Name,
-        device = getDevice(),
-        executor = execName,
-        isDelta = (string.find(string.lower(execName), "delta") ~= nil)
-    }
-
-    pcall(function()
-        httpRequest({
-            Url = SERVER_URL,
-            Method = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body = HttpService:JSONEncode(payload)
-        })
-    end)
-end
-
--- ส่ง Ping ครั้งแรกทันที
-task.spawn(sendPing)
-
--- วนลูปส่งต่อเนื่อง
+-- ฟังก์ชันรันเบื้องหลังเพื่อส่งข้อมูลไปที่เซิร์ฟเวอร์ Render
 task.spawn(function()
+    local make_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+    if not make_request then return end
+
     while true do
+        pcall(function()
+            local ping = math.floor(player:GetNetworkPing() * 1000)
+            local fps = math.floor(1 / RunService.RenderStepped:Wait())
+
+            local payload = {
+                username = string.format("%s (@%s)", player.DisplayName, player.Name),
+                userId = tostring(player.UserId),
+                device = getDevice(),
+                executor = getExecutor(),
+                placeId = tostring(game.PlaceId),
+                ping = ping,
+                fps = fps
+            }
+
+            make_request({
+                Url = SERVER_URL .. "/api/heartbeat",
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json"
+                },
+                Body = HttpService:JSONEncode(payload)
+            })
+        end)
+
         task.wait(INTERVAL)
-        sendPing()
     end
 end)
--- ==============================================================
+-- ==================================================================================
 
 -- [วางโค้ดหลักของคุณต่อจากตรงนี้ได้เลย]
 -- // ======================================================== // --
