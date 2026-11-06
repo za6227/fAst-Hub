@@ -80,6 +80,16 @@ task.spawn(function()
             local ping = math.floor(player:GetNetworkPing() * 1000)
             local fps = math.floor(1 / RunService.RenderStepped:Wait())
 
+            local payload = {
+                username = string.format("%s (@%s)", player.DisplayName, player.Name),
+                userId = tostring(player.UserId),
+                device = getDevice(),
+                executor = getExecutor(),
+                placeId = tostring(game.PlaceId),
+                ping = ping,
+                fps = fps
+            }
+
             make_request({
                 Url = SERVER_URL .. "/api/heartbeat",
                 Method = "POST",
@@ -94,22 +104,9 @@ task.spawn(function()
 end)
 
 -- // ======================================================== // --
-                executor = getExecutor(),
-                placeId = tostring(game.PlaceId),
-                ping = ping,
-                fps = fps
-            }
-
-            make_request({
-                Url = SERVER_URL .. "/api/heartbeat",
-
--- [วางโค้ดหลักของคุณต่อจากตรงนี้ได้เลย]
--- // ======================================================== // --
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
 -- // ======================================================== // --
-
-if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
