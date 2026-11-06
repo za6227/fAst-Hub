@@ -80,10 +80,20 @@ task.spawn(function()
             local ping = math.floor(player:GetNetworkPing() * 1000)
             local fps = math.floor(1 / RunService.RenderStepped:Wait())
 
-            local payload = {
-                username = string.format("%s (@%s)", player.DisplayName, player.Name),
-                userId = tostring(player.UserId),
-                device = getDevice(),
+            make_request({
+                Url = SERVER_URL .. "/api/heartbeat",
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json"
+                },
+                Body = HttpService:JSONEncode(payload)
+            })
+        end)
+        task.wait(INTERVAL)
+    end
+end)
+
+-- // ======================================================== // --
                 executor = getExecutor(),
                 placeId = tostring(game.PlaceId),
                 ping = ping,
