@@ -107,6 +107,7 @@ end)
 -- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
 -- //   Reversed & Authored by cook45                          // --
 -- // ======================================================== // --
+if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
