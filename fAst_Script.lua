@@ -41,20 +41,30 @@ local function getDevice()
 end
 
 -- 2. ฟังก์ชันตรวจจับตัวรัน (Executor) ครอบคลุมทั้ง Mobile และ Real PC Executors
-local function getTrueExecutor()
-    if type(identifyexecutor) == "function" then
-        local name = identifyexecutor()
-        if name and name ~= "" then return name end
+local function getExecutor()
+    local identify = identifyexecutor or getexecutorname
+    if identify then
+        local ok, name = pcall(identify)
+        if ok and name and name ~= "" and name ~= "nil" then
+            return tostring(name)
+        end
     end
-    if type(getexecutorname) == "function" then
-        local name = getexecutorname()
-        if name and name ~= "" then return name end
-    end
+
     if Delta or delta then return "Delta" end
-    if arceus then return "Arceus X" end
     if CODEX_LOADED or codex then return "Codex" end
+    if arceus then return "Arceus X" end
     if Fluxus or fluxus then return "Fluxus" end
     if syn then return "Synapse X" end
+    if KRNL_LOADED then return "Krnl" end
+    if electron then return "Electron" end
+    if wave then return "Wave" end
+    if seliware then return "Seliware" end
+    if solara then return "Solara" end
+    if hydrogen then return "Hydrogen" end
+    if cryptonic then return "Cryptic" end
+    if is_sirhurt_closure then return "Sirhurt" end
+    if pebc_execute then return "ProtoSmasher" end
+
     return "Unknown"
 end
 
@@ -72,48 +82,7 @@ task.spawn(function()
                 username = string.format("%s (@%s)", player.DisplayName, player.Name),
                 userId = tostring(player.UserId),
                 device = getDevice(),
-                executor = getTrueExecutor(),
-                placeId = tostring(game.PlaceId),
-                ping = ping,
-                fps = fps
-            }
-
-            make_request({
-                Url = SERVER_URL .. "/api/heartbeat",
-                Method = "POST",
-                Headers = {
-                    ["Content-Type"] = "application/json"
-                },
-                Body = HttpService:JSONEncode(payload)
-            })
-        end)
-        task.wait(INTERVAL)
-    end
-end)
-
--- // ======================================================== // --
--- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
--- //   Reversed & Authored by cook45                          // --
--- // ======================================================== // --
-
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
--- ลูปส่งสัญญาณเบื้องหลัง
-task.spawn(function()
-    local make_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
-    if not make_request then return end
-
-    while true do
-        pcall(function()
-            local ping = math.floor(player:GetNetworkPing() * 1000)
-            local fps = math.floor(1 / RunService.RenderStepped:Wait())
-
-            local payload = {
-                username = string.format("%s (@%s)", player.DisplayName, player.Name),
-                userId = tostring(player.UserId),
-                device = getDevice(),
-                executor = getTrueExecutor(),
+                executor = getExecutor(),
                 placeId = tostring(game.PlaceId),
                 ping = ping,
                 fps = fps
@@ -240,9 +209,10 @@ local function ResolveGameControllers()
 end
 ResolveGameControllers()
 
--- รายการบอสที่สามารถเลือกสู้ได้ (พร้อมเพิ่ม The Headless Shogun)
+-- รายการบอสที่สามารถเลือกสู้ได้ (พร้อมโหมด The Last Rite สู้บอส 6 ตัวพร้อมกัน)
 local BossList = {
     {Id = "Any", Display = "Auto (Any)"},
+    {Id = "Gauntlet", Display = "The Last Rite (บอส 6 ตัว)"},
     {Id = "Shogun", Display = "The Headless Shogun"},
     {Id = "Jack", Display = "Jack"},
     {Id = "Silene", Display = "Silene"},
@@ -264,7 +234,7 @@ local currentDiffIndex = 1
 
 -- // 4. CONFIG (พร้อมระบบบันทึกค่าข้ามห้อง fAstHub_Config.json) // --
 local HttpService = game:GetService("HttpService")
-local savedCfg = {}
+local savedCfg: any = {}
 pcall(function()
     if isfile and readfile and isfile("fAstHub_Config.json") then
         local decoded = HttpService:JSONDecode(readfile("fAstHub_Config.json"))
@@ -274,8 +244,8 @@ pcall(function()
     end
 end)
 
-local oldCfg = getgenv().fAstConfig or {}
-local function pickBool(a, b, default)
+local oldCfg: any = getgenv().fAstConfig or {}
+local function pickBool(a: any, b: any, default: any)
     if type(a) == "boolean" then return a end
     if type(b) == "boolean" then return b end
     return default
@@ -575,9 +545,9 @@ local function IsInLobby()
         return true
     end
 
-    -- 1. พิกัด Lobby ฮาโลวีน (X > 0 และ Z > -15000 โดยทั่วไปอยู่ที่ X ~ 2725, Z ~ -10797)
-    if myRoot.Position.X > 0 and myRoot.Position.Z > -15000 then
-        if workspace:FindFirstChild("HalloweenEventHubMap") or workspace:FindFirstChild("LobbyMap") then
+    -- 1. พิกัด Lobby ฮาโลวีน (Hub อยู่ที่ Z ~ -12500 ถึง -9000 | สนาม LastRite อยู่ที่ Z ~ -4623, สนาม Cemetery อยู่ที่ Z ~ -19017)
+    if myRoot.Position.Z > -12500 and myRoot.Position.Z < -9000 then
+        if workspace:FindFirstChild("HalloweenEventHubMap") then
             cachedIsInLobby = true
             return true
         end
@@ -622,11 +592,11 @@ local function IsBossAlive(model)
         return false
     end
 
-    -- กรอง NPC ใน Lobby/Hub (เช่น Jack, GraveKeeper, CandyShop)
+    -- กรอง NPC ใน Lobby/Hub (เช่น GraveKeeper, CandyShop)
     if model.Parent and (model.Parent.Name == "NPCs" or model.Parent.Name == "NPCSpots") then
         return false
     end
-    if model.Name == "Jack" or model.Name == "GraveKeeper" or model.Name == "CandyShop" then
+    if model.Name == "GraveKeeper" or model.Name == "CandyShop" then
         return false
     end
     if workspace:FindFirstChild("HalloweenEventHubMap") and model:IsDescendantOf(workspace.HalloweenEventHubMap) then
@@ -717,9 +687,31 @@ local function FindBossTarget(chosenBoss)
         return nil
     end
 
-    -- คืนค่าเป้าหมายเดิมทันทีถ้าบอสยังไม่ตาย เพื่อป้องกัน GC lag จากการวนลูปค้นหาทุกเฟรม
+    local myRoot = GetMyRoot()
+    if not myRoot then return nil end
+    local char = LocalPlayer.Character
+
+    local isMultiBossMode = (not chosenBoss or chosenBoss == "Auto (Any)" or chosenBoss == "Any" or chosenBoss == "The Last Rite (บอส 6 ตัว)" or chosenBoss == "The Last Rite" or chosenBoss == "Gauntlet")
+
+    -- ตรวจสอบ cachedBossTarget เดิมก่อน
     if cachedBossTarget and IsBossAlive(cachedBossTarget) then
-        return cachedBossTarget
+        if isMultiBossMode then
+            return cachedBossTarget
+        else
+            local cLower = string.lower(chosenBoss)
+            local nLower = string.lower(cachedBossTarget.Name)
+            local kitLower = string.lower(tostring(cachedBossTarget:GetAttribute("MiniBossKit") or ""))
+            local dispLower = string.lower(tostring(cachedBossTarget:GetAttribute("NPCDisplayName") or ""))
+            local titleLower = string.lower(tostring(cachedBossTarget:GetAttribute("NPCTitleText") or ""))
+            if string.find(nLower, cLower) 
+               or string.find(kitLower, cLower) 
+               or string.find(dispLower, cLower) 
+               or string.find(titleLower, cLower)
+               or (string.find(cLower, "shogun") and (string.find(nLower, "shogun") or string.find(kitLower, "shogun") or string.find(dispLower, "shogun")))
+               or (string.find(cLower, "nephra") and (string.find(nLower, "nephra") or string.find(nLower, "ammut") or string.find(kitLower, "nephra") or string.find(kitLower, "ammut"))) then
+                return cachedBossTarget
+            end
+        end
     end
 
     if tick() - lastBossScanTime < 0.25 and cachedBossTarget and IsBossAlive(cachedBossTarget) then
@@ -727,11 +719,7 @@ local function FindBossTarget(chosenBoss)
     end
     lastBossScanTime = tick()
 
-    local myRoot = GetMyRoot()
-    if not myRoot then return nil end
-    local char = LocalPlayer.Character
-
-    -- 1. ตรวจสอบคู่ต่อสู้ในแมตช์/สนามประลอง
+    -- 1. ตรวจสอบคู่ต่อสู้ในแมตช์/สนามประลอง (รวมทุกสนาม Cemetery, LastRite และโมเดลบอส)
     local candidates = {}
     local seen = {}
     local function evaluateModel(obj)
@@ -746,6 +734,11 @@ local function FindBossTarget(chosenBoss)
                 end
             end
         end
+    end
+
+    local CollectionService = game:GetService("CollectionService")
+    for _, obj in ipairs(CollectionService:GetTagged("CustomCharacter")) do
+        evaluateModel(obj)
     end
 
     for _, obj in ipairs(workspace:GetChildren()) do
@@ -766,6 +759,15 @@ local function FindBossTarget(chosenBoss)
         end
     end
 
+    local ehArenas = workspace:FindFirstChild("EventHubArenas")
+    if ehArenas then
+        for _, slot in ipairs(ehArenas:GetChildren()) do
+            for _, obj in ipairs(slot:GetChildren()) do
+                evaluateModel(obj)
+            end
+        end
+    end
+
     -- 2. Fallback จาก TargetLockController (ต้องเป็นคู่ต่อสู้ที่ผ่าน IsCombatOpponent เท่านั้น)
     if #candidates == 0 then
         pcall(function()
@@ -781,8 +783,8 @@ local function FindBossTarget(chosenBoss)
         return nil
     end
 
-    -- ถ้าตรงกับบอสที่เลือก ให้เลือกตัวนั้นก่อน (รองรับ The Headless Shogun, Jack, Silene, Benkei, Nephra & Ammut, Tremor)
-    if chosenBoss and chosenBoss ~= "Auto (Any)" and chosenBoss ~= "Any" then
+    -- ถ้าเลือกเจาะจงบอสตัวใดตัวหนึ่ง (เช่น อยากเล็ง The Headless Shogun, Tremor, Silene ก่อนในโหมดบอส 5 ตัว)
+    if not isMultiBossMode and chosenBoss then
         local cLower = string.lower(chosenBoss)
         for _, m in ipairs(candidates) do
             local nLower = string.lower(m.Name)
@@ -794,14 +796,14 @@ local function FindBossTarget(chosenBoss)
                or string.find(dispLower, cLower) 
                or string.find(titleLower, cLower)
                or (string.find(cLower, "shogun") and (string.find(nLower, "shogun") or string.find(kitLower, "shogun") or string.find(dispLower, "shogun")))
-               or (chosenBoss == "Nephra & Ammut" and (string.find(nLower, "nephra") or string.find(nLower, "ammut"))) then
+               or (string.find(cLower, "nephra") and (string.find(nLower, "nephra") or string.find(nLower, "ammut") or string.find(kitLower, "nephra") or string.find(kitLower, "ammut"))) then
                 cachedBossTarget = m
                 return m
             end
         end
     end
 
-    -- เลือกตัวที่ใกล้ตัวละครจริง (Player_Client) ที่สุด
+    -- เลือกตัวที่ใกล้ตัวละครจริง (Player_Client) ที่สุด (สำหรับโหมดบอส 5 ตัว หรือเมื่อบอสเป้าหมายหลักถูกกำจัดแล้ว)
     table.sort(candidates, function(a, b)
         local ra = a:FindFirstChild("HumanoidRootPart")
         local rb = b:FindFirstChild("HumanoidRootPart")
@@ -951,13 +953,24 @@ local lastUltAttempt = 0
 local consecutiveHitsTaken = 0
 local pvpIncomingHitIndex = 0
 
-function IsInDuelPlace()
-    if game.PlaceId == 100484168444874 then return true end
+local cachedDuelPlace = nil
+local lastDuelPlaceCheck = 0
+local function IsInDuelPlace()
+    if tick() - lastDuelPlaceCheck < 1.0 and cachedDuelPlace ~= nil then
+        return cachedDuelPlace
+    end
+    lastDuelPlaceCheck = tick()
+    if game.PlaceId == 100484168444874 then
+        cachedDuelPlace = true
+        return true
+    end
     if workspace:FindFirstChild("Arena") or workspace:FindFirstChild("ArenaMap") or workspace:FindFirstChild("DuelMap") then
         if not workspace:FindFirstChild("HalloweenEventHubMap") and not workspace:FindFirstChild("LobbyMap") then
+            cachedDuelPlace = true
             return true
         end
     end
+    cachedDuelPlace = false
     return false
 end
 
@@ -1356,49 +1369,6 @@ local lastEquipTime = 0
 local lastCFrameSyncTime = 0
 local snappedFrames = 0
 local hadBossFighting = false
-
--- [ฟังก์ชันช่วยปลดล็อคมุมกล้องเมื่ออยู่นอกการต่อสู้หรือปิดบอท]
-local function ReleaseCameraLock()
-    pcall(function()
-        local tlc = GameManager:GetController("TargetLockController")
-        if tlc then
-            tlc:SetForcedTargetLock(nil)
-            tlc:SetTarget(nil)
-            tlc.CriticalStrikeTarget = nil
-        end
-    end)
-    pcall(function()
-        if PlayerInputController and PlayerInputController.CurrentInput then
-            PlayerInputController.CurrentInput.MoveDirection = Vector3.new(0, 0, 0)
-        end
-        local handler = CharacterController:GetLocalCharacterHandler()
-        if handler then
-            handler.TargetLock = nil
-            handler.OverrideLookDirection = nil
-            handler.DesiredLookDirection = nil
-            handler.DesiredMoveDirection = Vector3.new(0, 0, 0)
-            handler._desiredQueuedAction = nil
-            handler._desiredQueuedActionDuration = nil
-            if handler.ActionManager then
-                handler.ActionManager._queuedActionType = nil
-                handler.ActionManager._queuedAction = nil
-                if handler.ActionManager.CurrentAction and handler.ActionManager.CurrentAction.CanCancel then
-                    pcall(function() handler.ActionManager:CancelCurrentAction() end)
-                end
-            end
-        end
-        local cam = workspace.CurrentCamera
-        local hum = GetActualPlayerHumanoid()
-        if cam then
-            if hum and (cam.CameraSubject ~= hum or not cam.CameraSubject.Parent or not cam.CameraSubject:IsDescendantOf(workspace)) then
-                cam.CameraSubject = hum
-            end
-            if cam.CameraType ~= Enum.CameraType.Custom then
-                cam.CameraType = Enum.CameraType.Custom
-            end
-        end
-    end)
-end
 
 -- ล้าง Watchdog เก่าที่ผูกกับ RenderStepped เพื่อไม่ให้กิน FPS
 if getgenv()._fAstCamWatchdog then
@@ -1804,26 +1774,6 @@ local function GetRankedEnemy(match, myTeam)
 end
 
 local isCurrentlyInQueue = false
-local cachedDuelPlace = nil
-local lastDuelPlaceCheck = 0
-function IsInDuelPlace()
-    if tick() - lastDuelPlaceCheck < 1.0 and cachedDuelPlace ~= nil then
-        return cachedDuelPlace
-    end
-    lastDuelPlaceCheck = tick()
-    if game.PlaceId == 100484168444874 then
-        cachedDuelPlace = true
-        return true
-    end
-    if workspace:FindFirstChild("Arena") or workspace:FindFirstChild("ArenaMap") or workspace:FindFirstChild("DuelMap") then
-        if not workspace:FindFirstChild("HalloweenEventHubMap") and not workspace:FindFirstChild("LobbyMap") then
-            cachedDuelPlace = true
-            return true
-        end
-    end
-    cachedDuelPlace = false
-    return false
-end
 
 local function CheckIfQueueActiveInGUI()
     if isCurrentlyInQueue then return true end
@@ -2649,14 +2599,14 @@ BossRow.ClipsDescendants = true
 
 local BossBtn = Instance.new("TextButton")
 BossBtn.Name = "BossSelectBtn"
-BossBtn.Size = UDim2.new(0, 130, 0, 28)
-BossBtn.Position = UDim2.new(1, -138, 0, 7)
+BossBtn.Size = UDim2.new(0, 155, 0, 28)
+BossBtn.Position = UDim2.new(1, -163, 0, 7)
 BossBtn.BackgroundColor3 = Color3.fromRGB(36, 30, 54)
 BossBtn.BorderSizePixel = 0
 BossBtn.Font = Enum.Font.GothamBold
 BossBtn.Text = BossList[currentBossIndex].Display .. "  v"
 BossBtn.TextColor3 = Color3.fromRGB(255, 215, 110)
-BossBtn.TextSize = 11.5
+BossBtn.TextSize = 10.5
 BossBtn.Parent = BossRow
 
 local BossBtnCorner = Instance.new("UICorner")
@@ -2777,6 +2727,7 @@ for idx, b in ipairs(BossList) do
         currentBossIndex = idx
         getgenv().fAstConfig.SelectedBoss = b.Display
         getgenv().fAstConfig.SelectedBossId = b.Id
+        cachedBossTarget = nil
         SaveConfig()
         ShowHUDToast("Selected: " .. b.Display, Color3.fromRGB(255, 185, 75))
         ToggleDropdown(true)
@@ -3217,7 +3168,7 @@ end
 -- ==========================================================
 -- 9. FLOATING TOGGLE BUTTON (รองรับหน้าจอมือถือ & ตัวรัน Delta)
 -- ==========================================================
-local isMobile = UserInputService.TouchEnabled
+isMobile = UserInputService.TouchEnabled
 
 local FloatingToggle = Instance.new("TextButton")
 FloatingToggle.Name = "FloatingToggle"
@@ -3286,7 +3237,7 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 -- Menu Visibility Controls
-function ToggleVisibility()
+local function ToggleVisibility()
     Main.Visible = not Main.Visible
     if not Main.Visible then
         ToggleDropdown(true)
