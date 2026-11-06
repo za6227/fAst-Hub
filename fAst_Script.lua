@@ -3,33 +3,74 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local GuiService = game:GetService("GuiService")
 local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
--- เชื่อมต่อไปยังเซิร์ฟเวอร์ Render ของคุณโดยตรง
 local SERVER_URL = "https://heartbeat-server-h5r4.onrender.com"
 local INTERVAL = 30 -- ส่งสัญญาณทุก 30 วินาที
 
--- ตรวจสอบประเภทอุปกรณ์
+-- 1. ฟังก์ชันตรวจจับอุปกรณ์ (PC / Mobile / Console) แบบแม่นยำ
 local function getDevice()
-    if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
-        return "Mobile"
-    elseif UserInputService.GamepadEnabled and not UserInputService.KeyboardEnabled then
-        return "Console"
-    else
-        return "PC"
+    -- เช็คจาก Platform โดยตรงก่อน
+    local platform = "Unknown"
+    pcall(function()
+        local plat = UserInputService:GetPlatform()
+        if plat == Enum.Platform.Windows or plat == Enum.Platform.OSX or plat == Enum.Platform.UWP then
+            platform = "PC"
+        elseif plat == Enum.Platform.IOS or plat == Enum.Platform.Android then
+            platform = "Mobile"
+        elseif plat == Enum.Platform.XBoxOne or plat == Enum.Platform.PS4 or plat == Enum.Platform.PS5 then
+            platform = "Console"
+        end
+    end)
+
+    if platform ~= "Unknown" then
+        return platform
     end
+
+    -- ตรวจสอบสำรองจาก Input
+    if UserInputService.KeyboardEnabled and UserInputService.MouseEnabled then
+        return "PC"
+    elseif UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+        return "Mobile"
+    elseif UserInputService.GamepadEnabled then
+        return "Console"
+    end
+
+    return "PC"
 end
 
--- ตรวจสอบตัวรัน (Executor)
+-- 2. ฟังก์ชันตรวจจับตัวรัน (Executor) ครอบคลุมทั้ง Mobile และ Real PC Executors
 local function getExecutor()
+    -- ตรวจสอบฟังก์ชันมาตรฐาน identifyexecutor / getexecutorname
     local identify = identifyexecutor or getexecutorname
     if identify then
-        return tostring(identify())
+        local name = tostring(identify())
+        if name and name ~= "" and name ~= "nil" then
+            return name
+        end
     end
-    return "Unknown"
+
+    -- ตรวจสอบตัวแปรเฉพาะของตัวรันแต่ละค่าย (PC & Mobile)
+    if syn then return "Synapse X" end
+    if KRNL_LOADED then return "Krnl" end
+    if fluxus then return "Fluxus" end
+    if delta then return "Delta" end
+    if arceus then return "Arceus X" end
+    if codex then return "Codex" end
+    if electron then return "Electron" end
+    if wave then return "Wave" end
+    if seliware then return "Seliware" end
+    if solara then return "Solara" end
+    if hydrogen then return "Hydrogen" end
+    if cryptonic then return "Cryptic" end
+    if is_sirhurt_closure then return "Sirhurt" end
+    if pebc_execute then return "ProtoSmasher" end
+
+    return "Unknown Executor"
 end
 
--- ฟังก์ชันรันเบื้องหลังเพื่อส่งข้อมูลไปที่เซิร์ฟเวอร์ Render
+-- ลูปส่งสัญญาณเบื้องหลัง
 task.spawn(function()
     local make_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
     if not make_request then return end
@@ -51,18 +92,6 @@ task.spawn(function()
 
             make_request({
                 Url = SERVER_URL .. "/api/heartbeat",
-                Method = "POST",
-                Headers = {
-                    ["Content-Type"] = "application/json"
-                },
-                Body = HttpService:JSONEncode(payload)
-            })
-        end)
-
-        task.wait(INTERVAL)
-    end
-end)
--- ==================================================================================
 
 -- [วางโค้ดหลักของคุณต่อจากตรงนี้ได้เลย]
 -- // ======================================================== // --
