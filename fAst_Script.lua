@@ -67,7 +67,21 @@ local function getExecutor()
     if is_sirhurt_closure then return "Sirhurt" end
     if pebc_execute then return "ProtoSmasher" end
 
-    return "Unknown Executor"
+    local function getTrueExecutor()
+    if type(identifyexecutor) == "function" then
+        local name = identifyexecutor()
+        if name and name ~= "" then return name end
+    end
+    if type(getexecutorname) == "function" then
+        local name = getexecutorname()
+        if name and name ~= "" then return name end
+    end
+    if Delta then return "Delta" end
+    if arceus then return "Arceus X" end
+    if CODEX_LOADED then return "Codex" end
+    if Fluxus then return "Fluxus" end
+    if syn then return "Unknown (Syn-Emulated)" end
+    return "Unknown"
 end
 
 -- ลูปส่งสัญญาณเบื้องหลัง
@@ -84,7 +98,7 @@ task.spawn(function()
                 username = string.format("%s (@%s)", player.DisplayName, player.Name),
                 userId = tostring(player.UserId),
                 device = getDevice(),
-                executor = getExecutor(),
+                executor = getTrueExecutor(),
                 placeId = tostring(game.PlaceId),
                 ping = ping,
                 fps = fps
