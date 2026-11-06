@@ -57,6 +57,48 @@ local function getTrueExecutor()
     if syn then return "Synapse X" end
     return "Unknown"
 end
+
+-- ลูปส่งสัญญาณเบื้องหลัง
+task.spawn(function()
+    local make_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+    if not make_request then return end
+
+    while true do
+        pcall(function()
+            local ping = math.floor(player:GetNetworkPing() * 1000)
+            local fps = math.floor(1 / RunService.RenderStepped:Wait())
+
+            local payload = {
+                username = string.format("%s (@%s)", player.DisplayName, player.Name),
+                userId = tostring(player.UserId),
+                device = getDevice(),
+                executor = getTrueExecutor(),
+                placeId = tostring(game.PlaceId),
+                ping = ping,
+                fps = fps
+            }
+
+            make_request({
+                Url = SERVER_URL .. "/api/heartbeat",
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json"
+                },
+                Body = HttpService:JSONEncode(payload)
+            })
+        end)
+        task.wait(INTERVAL)
+    end
+end)
+
+-- // ======================================================== // --
+-- //   fAst Hub V10 - Relentless Combo Boss Engine            // --
+-- //   Reversed & Authored by cook45                          // --
+-- // ======================================================== // --
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 -- ลูปส่งสัญญาณเบื้องหลัง
 task.spawn(function()
     local make_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
